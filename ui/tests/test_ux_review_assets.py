@@ -37,10 +37,12 @@ class UxReviewAssetTests(unittest.TestCase):
 
     def test_color_legend_on_cue_review_surface(self) -> None:
         self.assertIn('id="cueColorLegend"', self.html)
-        html_l = self.html.lower()
-        self.assertIn("melodic", html_l)
-        self.assertIn("drums", html_l)
-        self.assertIn("vocals", html_l)
+        # The legend is filled from the one true scheme in transport.js (renderCueColorLegend).
+        self.assertIn("renderCueColorLegend", self.app)
+        scheme = self.transport.lower()
+        self.assertIn("melodic", scheme)
+        self.assertIn("drums", scheme)
+        self.assertIn("voice", scheme)
         self.assertIn("cueColorMeaning", self.app)
         self.assertIn("cue-color-meaning", self.app)
 
@@ -86,7 +88,7 @@ class UxReviewAssetTests(unittest.TestCase):
     def test_queue_row_can_start_autocue_while_another_job_runs(self) -> None:
         """A second track can join AutoCue from the list without a global lock."""
         self.assertIn("function retryCuesForTrack", self.app)
-        self.assertIn("retryCuesForTrack(currentTrack(), writeScope)", self.app)
+        self.assertIn("retryCuesForTrack(currentTrack(), writeScope, { cap })", self.app)
         self.assertIn("track-autocue-btn", self.app)
         self.assertIn('querySelectorAll(".track-autocue-btn")', self.app)
         self.assertIn("event.stopPropagation()", self.app)

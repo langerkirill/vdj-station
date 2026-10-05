@@ -180,52 +180,67 @@ def vibe_label_from_path(relative_path: str, library: str = "") -> str:
     return label
 
 
-# Loose genre families for soft ranking (not a hard filter)
+# Loose genre families for soft ranking (not a hard filter).
+# House fork: house-centric. "house" covers organic / melodic / deep / progressive /
+# afro / tech house plus organic-tribal flavours that live inside the same sets.
+FAMILY_HOUSE = "house"
+FAMILY_PSY_WORLD = "psy_world"
+FAMILY_VOCAL_SOUL = "vocal_soul"
+FAMILY_HIPHOP = "hiphop"
+FAMILY_ROCK_INDIE = "rock_indie"
+GENRE_FAMILY_IDS = (
+    FAMILY_HOUSE,
+    FAMILY_VOCAL_SOUL,
+    FAMILY_HIPHOP,
+    FAMILY_PSY_WORLD,
+    FAMILY_ROCK_INDIE,
+)
 _GENRE_FAMILIES: list[tuple[str, set[str]]] = [
     (
-        "rnb_soul_zouk",
+        FAMILY_VOCAL_SOUL,
         {
             "r&b",
             "rnb",
             "soul",
             "neo soul",
-            "urban kiz",
-            "zouk",
-            "zouk remix",
-            "lounge zouk",
-            "kizomba",
             "afrobeats",
-            "afro",
             "pop",
         },
     ),
     (
-        "hiphop",
+        FAMILY_HIPHOP,
         {"hip-hop", "hip hop", "hip hop/rap", "rap", "trap", "trappy"},
     ),
     (
-        "house_dance",
+        FAMILY_HOUSE,
         {
+            "organic house",
+            "melodic house",
             "deep house",
+            "progressive house",
+            "afro house",
             "house",
             "tech house",
+            "melodic techno",
+            "indie dance",
+            "downtempo",
             "dance",
             "garage",
             "electronic",
             "electronica",
             "edm",
+            "tribal",
+            "organic",
         },
     ),
     (
-        "psy_tribal_world",
+        FAMILY_PSY_WORLD,
         {
-            "tribal",
             "psy",
             "psytrance",
             "world",
             "downtemple",
             "ambient",
-            "organic",
             "ethnic",
             "india",
             "shaman",
@@ -238,7 +253,7 @@ _GENRE_FAMILIES: list[tuple[str, set[str]]] = [
         },
     ),
     (
-        "rock_indie",
+        FAMILY_ROCK_INDIE,
         {"rock", "indie", "indie rock", "alternative", "alternative & punk", "power pop"},
     ),
 ]
@@ -260,23 +275,40 @@ def genre_family(
         k in blob
         for k in (
             "india",
-            "tribal",
             "shaman",
             "desert dwellers",
             "downtemple",
-            "mystical",
-            "organic",
             "drumspyder",
+            "psy",
         )
     ):
-        return "psy_tribal_world"
+        return FAMILY_PSY_WORLD
     if any(
         k in blob
-        for k in ("meridyun", "kiz", "zouk", "urban kiz", "saia", "kizomba")
+        for k in (
+            "housey",
+            "deep house",
+            "tech house",
+            "organic house",
+            "melodic house",
+            "afro house",
+            "club",
+            "tribal",
+            "organic",
+            "mystical",
+            "oh warm",
+            "oh deep",
+            "oh peak",
+            "oh melodic",
+            "oh percussive",
+            "oh closers",
+        )
     ):
-        return "rnb_soul_zouk"
-    if any(k in blob for k in ("housey", "deep house", "tech house", "club")):
-        return "house_dance"
+        return FAMILY_HOUSE
+    if any(k in blob for k in ("kizomba", "urban kiz", "saia")):
+        return FAMILY_VOCAL_SOUL
+    if re.search(r"\boh vocal\b", blob):
+        return FAMILY_VOCAL_SOUL
     for fam, keys in _GENRE_FAMILIES:
         if any(k in blob for k in keys):
             return fam

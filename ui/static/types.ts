@@ -56,6 +56,10 @@ export type TrackPlacements = {
 
 export type Track = {
   path: string;
+  /** House fork: top-level BPM + Camelot key from VDJ (null when unknown). */
+  bpm?: number | null;
+  camelot?: string | null;
+  key?: string | null;
   name?: string;
   relative_path?: string;
   group?: string;

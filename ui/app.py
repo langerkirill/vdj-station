@@ -3,18 +3,28 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+# HOUSE FORK: profile + read-only guards load FIRST so nothing can write before
+# the filesystem guard is armed.
+from sorter import profile as _profile
+from sorter import fs_guard as _fs_guard
+from sorter import sorted_state as _sorted_state
+
+_fs_guard.install()
 
 from sorter.config import (
+    DJ_NOTES_ROOT,
     ADD_CUES,
     CUE_STAGES,
     CUES_ROOT,
@@ -46,9 +56,16 @@ from sorter.library import (
     list_ready_tracks,
 )
 
-UI_BUILD = "20260829-recs-event-plays"
+UI_BUILD = "20261005-house-sauna-fest11"
 from sorter.pajamathon_set_sync import sync_pajamathon_set_deletes
 from sorter.recommend import get_recommender
+from sorter.safe_write import (
+    session_failures as _session_save_failures,
+    with_save_status,
+)
+from sorter import deleted_markers as _deleted_markers
+from sorter import house_folders as _house_folders
+from sorter import llm as sorter_llm
 from sorter.autocue_path import ensure_autocue_on_path
 from sorter.cue_readiness import assess_cue_readiness
 from sorter.lanes import lane_from_user_color
@@ -122,6 +139,7 @@ from sorter.cue_edit import (
     add_cue_point,
     add_loop_point,
     delete_cue_point,
+    restore_poi_point,
     scale_loop_point,
     set_cue_jumpable,
     set_poi_color,
@@ -145,6 +163,16 @@ from sorter.practice_sets import (
     list_practice_mixes,
 )
 from sorter.practice_analyze import get_analyze_job, start_analyze_job
+from sorter.stem_audit import (
+    cancel_stem_audit_job,
+    check_one_stem,
+    delete_stem_sidecars,
+    get_stem_audit_job,
+    latest_stem_audit_job,
+    start_stem_audit_job,
+    stem_inventory,
+)
+from sorter.live_set_played import filter_best_items_hide_live_played
 from sorter.transitions_db import (
     annotate_mixes_exclude_from_best,
     ensure_database,
@@ -155,13 +183,40 @@ from sorter.transitions_db import (
     update_practice_score,
 )
 
+log = logging.getLogger("music-sorter")
 app = FastAPI(title="Music Sorter", version="0.2.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 @app.on_event("startup")
 def _seed_action_log() -> None:
-    """Ensure historical sorts from first session are in the durable log."""
+    """Startup hooks. House fork: no restore_jobs / sideview watch / historical seed."""
+    import sys
+
+    import vdj_database_safety as _safety
+
+    print(
+        "[house-fork] profile=%s readonly=%s notes=%s\n"
+        "[house-fork] app.py        = %s\n"
+        "[house-fork] sorter.config = %s\n"
+        "[house-fork] vdj_database_safety = %s\n"
+        "[house-fork] vdj_cuer      = %s"
+        % (
+            _profile.PROFILE,
+            _profile.readonly(),
+            DJ_NOTES_ROOT,
+            __file__,
+            sys.modules["sorter.config"].__file__,
+            _safety.__file__,
+            getattr(sys.modules.get("vdj_cuer"), "__file__", "(not imported)"),
+        ),
+        flush=True,
+    )
+    if _profile.IS_HOUSE:
+        # Skipped on purpose: restore_jobs (would resume AutoCue jobs), the
+        # Sideview recs watcher (writes VDJ My Lists), seed_historical_sorts.
+        print("[house-fork] skipped startup hooks: restore_jobs, sideview watch, seed_historical_sorts", flush=True)
+        return
     try:
         seed_historical_sorts(HISTORICAL_SORTS_2026_07_28)
     except OSError:
@@ -180,24 +235,89 @@ def _seed_action_log() -> None:
         print(f"⚠️  AutoCue job restore failed: {exc}")
 
 
+# --- HOUSE FORK: read-only enforcement ------------------------------------
+# POST endpoints with no dry-run mode are refused outright while read-only.
+READONLY_BLOCKED_POSTS = {
+    "/api/folders",
+    "/api/undo",
+    "/api/grid-fix/batch",
+    "/api/grid-align/attempt",
+    "/api/set-beatgrid",
+    "/api/scale-loop",
+    "/api/set-cue-color",
+    "/api/move-poi",
+    "/api/add-cue",
+    "/api/add-loop",
+    "/api/rename-poi",
+    "/api/delete-cue",
+    "/api/notes",
+    "/api/halve-bpm",
+    "/api/retry-cues",
+    "/api/retry-cues/batch",
+    "/api/approve-set-cues",
+    "/api/must-play-set",
+    "/api/stems/delete",
+    "/api/stems/audit",
+    "/api/stems/check",
+    "/api/assemble/export",
+}
+
+
+@app.middleware("http")
+async def _readonly_gate(request: Request, call_next):
+    if (
+        _profile.readonly()
+        and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and request.url.path in READONLY_BLOCKED_POSTS
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": _profile.READONLY_MESSAGE,
+                "readonly": True,
+                "blocked": request.url.path,
+            },
+        )
+    return await call_next(request)
+
+
+class _DryRunWhenReadonly(BaseModel):
+    """Request base: forces dry_run=True while MUSIC_SORTER_READONLY is on."""
+
+    @model_validator(mode="after")
+    def _force_dry_run(self):
+        if _profile.readonly() and "dry_run" in type(self).model_fields:
+            object.__setattr__(self, "dry_run", True)
+        return self
+
+
 class SortDestination(BaseModel):
     """One House/Zouk folder target (relative path under that library root)."""
 
     library: str  # House | Zouk | Both (Both expands to both libs at this folder)
     relative_folder: str
+    new_folder: bool = False  # House fork: relative_folder is a NEW folder to create on first sort
 
 
-class SortRequest(BaseModel):
+class SortRequest(_DryRunWhenReadonly):
     path: str
     # Optional when relative_folder is set. Color paints after sort.
     lane: str = ""
     # Legacy single-target fields (still supported).
-    library: str = "Zouk"
+    library: str = "House"
     relative_folder: str = ""
     # Preferred: one or more destinations (House and/or Zouk, any folders).
     destinations: Optional[list[SortDestination]] = None
     dry_run: bool = False
     allow_vdj_running: bool = False
+    # House fork: every sort ALSO copies into Sets/Sauna Fest/<same subfolder> (toggle in the UI).
+    also_sauna_fest: bool = True
+    # TEST ONLY: a scratch set folder name (must start with 'ZZ TEST '); the UI never sends it.
+    set_folder_name: str = ""
+
+
+class SaunaFestSortRequest(SortRequest):
+    pass
 
 
 class CreateFolderRequest(BaseModel):
@@ -212,7 +332,7 @@ class RecommendRequest(BaseModel):
     force: bool = False
 
 
-class PromoteRequest(BaseModel):
+class PromoteRequest(_DryRunWhenReadonly):
     path: str
     destination_stage: str = "ready_for_sort"
     dry_run: bool = False
@@ -220,7 +340,7 @@ class PromoteRequest(BaseModel):
     require_cued: Optional[bool] = None
 
 
-class RemoveReadyRequest(BaseModel):
+class RemoveReadyRequest(_DryRunWhenReadonly):
     path: str
     dry_run: bool = False
     to_trash: bool = True
@@ -229,7 +349,7 @@ class RemoveReadyRequest(BaseModel):
     remove_from_database: bool = True
 
 
-class DeleteAddCuesRequest(BaseModel):
+class DeleteAddCuesRequest(_DryRunWhenReadonly):
     """Trash/delete an Add Cues track + remove its VDJ Song (cues/loops)."""
 
     path: str
@@ -238,7 +358,7 @@ class DeleteAddCuesRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class RemoveSetCopyRequest(BaseModel):
+class RemoveSetCopyRequest(_DryRunWhenReadonly):
     """Delete the Sets/Pajamathon copy only — siblings stay."""
 
     path: str
@@ -247,7 +367,7 @@ class RemoveSetCopyRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class SendBackSetRequest(BaseModel):
+class SendBackSetRequest(_DryRunWhenReadonly):
     """Relocate a Sets/Pajamathon copy to Add Cues/Pajamathon."""
 
     path: str
@@ -255,7 +375,7 @@ class SendBackSetRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class DeletePlacementRequest(BaseModel):
+class DeletePlacementRequest(_DryRunWhenReadonly):
     """Delete a House/Zouk/Cues Sorted copy + its VDJ Song (cues/loops)."""
 
     path: str  # full path of the library/archive placement
@@ -264,7 +384,7 @@ class DeletePlacementRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class CopyCuesRequest(BaseModel):
+class CopyCuesRequest(_DryRunWhenReadonly):
     """Copy Ready/Add Cues markers onto an existing library or Sets copy."""
 
     source: str
@@ -275,7 +395,7 @@ class CopyCuesRequest(BaseModel):
     create_backup: bool = True
 
 
-class CopyCuesAllRequest(BaseModel):
+class CopyCuesAllRequest(_DryRunWhenReadonly):
     """Copy Ready/Add Cues markers onto every listed library/archive/Sets copy."""
 
     source: str
@@ -286,7 +406,7 @@ class CopyCuesAllRequest(BaseModel):
     create_backup: bool = True
 
 
-class AddToSetRequest(BaseModel):
+class AddToSetRequest(_DryRunWhenReadonly):
     """Copy a Ready/Add Cues track into Sets/Pajamathon + clone VDJ cues."""
 
     path: str
@@ -296,7 +416,7 @@ class AddToSetRequest(BaseModel):
     create_backup: bool = True
 
 
-class DemoteReadyRequest(BaseModel):
+class DemoteReadyRequest(_DryRunWhenReadonly):
     """Kick a Ready for Sort track back to Add Cues."""
 
     path: str
@@ -305,7 +425,7 @@ class DemoteReadyRequest(BaseModel):
     subfolder: str = "Back from Ready"
 
 
-class RetryCuesRequest(BaseModel):
+class RetryCuesRequest(_DryRunWhenReadonly):
     path: str
     dry_run: bool = False
     allow_vdj_running: bool = False
@@ -315,7 +435,7 @@ class RetryCuesRequest(BaseModel):
     write_scope: str = "all"
 
 
-class BatchRetryCuesRequest(BaseModel):
+class BatchRetryCuesRequest(_DryRunWhenReadonly):
     """Batch AutoCue. Prefer paths, or filter=not_cued to take current Add Cues queue."""
 
     paths: list[str] = []
@@ -328,7 +448,7 @@ class BatchRetryCuesRequest(BaseModel):
     model_name: Optional[str] = None
 
 
-class UndoRequest(BaseModel):
+class UndoRequest(_DryRunWhenReadonly):
     action_id: str
     dry_run: bool = False
     allow_vdj_running: bool = False
@@ -339,7 +459,7 @@ class GridPreflightRequest(BaseModel):
     deep: bool = True
 
 
-class DeleteCueRequest(BaseModel):
+class DeleteCueRequest(_DryRunWhenReadonly):
     path: str
     kind: str  # "cue" | "loop"
     pos: float
@@ -350,7 +470,15 @@ class DeleteCueRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class ScaleLoopRequest(BaseModel):
+class RestoreMarkerRequest(_DryRunWhenReadonly):
+    """Undo a delete: put back the exact marker remembered under ``id``."""
+
+    id: str
+    dry_run: bool = False
+    allow_vdj_running: bool = False
+
+
+class ScaleLoopRequest(_DryRunWhenReadonly):
     """Halve or double a loop's Size (beats) in VirtualDJ."""
 
     path: str
@@ -363,13 +491,13 @@ class ScaleLoopRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class SetCueColorRequest(BaseModel):
+class SetCueColorRequest(_DryRunWhenReadonly):
     """Change Color on one cue or loop POI."""
 
     path: str
     kind: str  # cue | loop
     pos: float
-    color: str  # blue | green | purple | yellow | orange (or raw VDJ int)
+    color: str  # blue | lightblue | green | purple | yellow | orange (or raw VDJ int)
     num: Optional[str] = None
     name: Optional[str] = None
     slot: Optional[str] = None
@@ -377,7 +505,7 @@ class SetCueColorRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class MovePoiRequest(BaseModel):
+class MovePoiRequest(_DryRunWhenReadonly):
     """Move a cue or loop to a new start time (seconds)."""
 
     path: str
@@ -391,7 +519,7 @@ class MovePoiRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class AddCueRequest(BaseModel):
+class AddCueRequest(_DryRunWhenReadonly):
     """Place a new cue at a time (seconds). Snapping is done by the client."""
 
     path: str
@@ -402,7 +530,7 @@ class AddCueRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class AddLoopRequest(BaseModel):
+class AddLoopRequest(_DryRunWhenReadonly):
     """Place a new loop at a time (seconds). Snapping is done by the client."""
 
     path: str
@@ -414,7 +542,7 @@ class AddLoopRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class RenamePoiRequest(BaseModel):
+class RenamePoiRequest(_DryRunWhenReadonly):
     """Rename a cue or loop Name attribute in VirtualDJ."""
 
     path: str
@@ -440,7 +568,7 @@ class MustPlaySetRequest(BaseModel):
     path: str
 
 
-class NotesRequest(BaseModel):
+class NotesRequest(_DryRunWhenReadonly):
     path: str
     comment: str = ""
     dry_run: bool = False
@@ -448,7 +576,7 @@ class NotesRequest(BaseModel):
     create_backup: bool = False
 
 
-class HalveBpmRequest(BaseModel):
+class HalveBpmRequest(_DryRunWhenReadonly):
     path: str
     dry_run: bool = False
     allow_vdj_running: bool = False
@@ -456,7 +584,7 @@ class HalveBpmRequest(BaseModel):
     double_instead: bool = False
 
 
-class SetBeatgridRequest(BaseModel):
+class SetBeatgridRequest(_DryRunWhenReadonly):
     """Write a new downbeat time into VDJ Scan Phase + beatgrid POI."""
 
     path: str
@@ -465,7 +593,7 @@ class SetBeatgridRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class GridFixBatchRequest(BaseModel):
+class GridFixBatchRequest(_DryRunWhenReadonly):
     """Analyze (and optionally write) BPM half + bar-1 phase for many tracks."""
 
     paths: list[str] = []
@@ -475,7 +603,7 @@ class GridFixBatchRequest(BaseModel):
     allow_vdj_running: bool = False
 
 
-class GridAlignAttemptRequest(BaseModel):
+class GridAlignAttemptRequest(_DryRunWhenReadonly):
     """Run automatic 1-finding on one track (preview or write)."""
 
     path: str
@@ -552,7 +680,12 @@ def _enrich_track(
     user_color = getattr(cues, "user_color", "") or ""
     track_dict["user_color"] = user_color
     track_dict["lane"] = lane_from_user_color(user_color)
+    # House fork: no lanes — a cued track is "unsorted" until it is copied into a House folder.
     track_dict["needs_sort"] = bool(cues.is_cued and not track_dict["lane"])
+    # Surface BPM + Camelot key at the top level for the list rows / filters / sorts.
+    track_dict["bpm"] = cues.bpm if cues.bpm else None
+    track_dict["camelot"] = (cues.camelot or "") if cues.in_database else ""
+    track_dict["key"] = getattr(cues, "key", "") or ""
     track_dict["status"] = (
         "cued"
         if cues.is_cued
@@ -715,6 +848,39 @@ def _cached_placement_indexes() -> tuple[
     return cached_placement_indexes()
 
 
+@app.get("/api/save-failures")
+def get_save_failures() -> dict[str, Any]:
+    """Edits refused/failed since this server started (also shown in the UI)."""
+    return {"ok": True, "failures": _session_save_failures()}
+
+
+@app.get("/api/house-folder-suggest")
+def get_house_folder_suggest(tag: str = Query("")) -> dict[str, Any]:
+    """What a Gemini tag chip may offer ('New folder: <Tag>' / existing similar / cap reached).
+    Pure lookup: creates nothing; the folder only comes into being at Sort time."""
+    return {"ok": True, **_house_folders.suggest_tag_folder(tag)}
+
+
+@app.get("/api/house-folder-colors")
+def get_house_folder_colors() -> dict[str, Any]:
+    """Read-only: per-House-folder song colors (legend + chips) from house_folder_colors.json."""
+    from sorter import house_colors
+
+    table = house_colors.load()
+    return {
+        "ok": True,
+        "exists": table["exists"],
+        "folders": [{"folder": k, **v} for k, v in sorted(table["folders"].items())],
+        "default": table["default"],
+    }
+
+
+@app.get("/api/new-house-folders")
+def get_new_house_folders() -> dict[str, Any]:
+    """How many 'New folder in House' folders were created (no cap)."""
+    return {"ok": True, **_house_folders.new_folder_state()}
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     """Must stay cheap — UI boot waits on this before loading tracks."""
@@ -731,6 +897,14 @@ def health() -> dict[str, Any]:
         "stage_counts": {},
         "ui_build": UI_BUILD,
         "sets_root": str(SETS_ROOT),
+        "profile": _profile.public_profile(),
+        "readonly": _profile.readonly(),
+        "gemini_model": sorter_llm.PREFERRED_SORTER_MODEL,
+        "action_log": str(log_path()),
+        "fs_guard": {
+            k: v for k, v in _fs_guard.status().items() if k != "blocked_recent"
+        },
+        "code_root": str(Path(__file__).resolve().parent.parent),
     }
 
 
@@ -741,6 +915,9 @@ def _add_cues_work_tracks(crate: str = "all"):
     cannot be queued after it is hidden from the UI.
     """
     add_tracks = add_cues_tracks_by_crate(crate)
+    if _profile.IS_HOUSE:
+        # House sort COPIES (original stays): hide what is already sorted (sorted.json).
+        add_tracks = _sorted_state.drop_sorted(add_tracks)
     set_tracks = list_pajamathon_set_tracks()
     cue_index = summarize_cues_for_paths(
         [t.path for t in add_tracks] + [t.path for t in set_tracks]
@@ -756,7 +933,13 @@ def _add_cues_work_tracks(crate: str = "all"):
 
 
 @app.get("/api/tracks")
-def get_tracks(mode: str = Query("sort")) -> dict[str, Any]:
+def get_tracks(
+    mode: str = Query("sort"),
+    crate: Optional[str] = Query(
+        None,
+        description="add_cues only: limit to one top-level Add Cues folder (e.g. 'Sauna Fest House')",
+    ),
+) -> dict[str, Any]:
     """
     mode=sort → Ready for Sort (flat)
     mode=add_cues → Add Cues recursive review queue
@@ -765,15 +948,18 @@ def get_tracks(mode: str = Query("sort")) -> dict[str, Any]:
         # List load must stay fast. Skip House/Zouk rglob here — placements
         # load when a track is selected via /api/track-placements.
         add_tracks, set_tracks, cue_index = _add_cues_work_tracks("all")
+        crate_names = sorted({t.group for t in add_tracks if t.group})
+        if crate:
+            add_tracks = [t for t in add_tracks if t.group == crate]
         raw = [t.to_dict() for t in add_tracks]
         seen = {t["path"] for t in raw}
-        for ready in list_ready_tracks():
+        for ready in ([] if crate else list_ready_tracks()):
             payload = ready.to_dict()
             payload["section"] = "ready"
             if payload["path"] not in seen:
                 raw.append(payload)
                 seen.add(payload["path"])
-        for set_track in set_tracks:
+        for set_track in ([] if (crate or _profile.IS_HOUSE) else set_tracks):
             payload = set_track.to_dict()
             payload["section"] = "in_set"
             if payload["path"] not in seen:
@@ -835,6 +1021,9 @@ def get_tracks(mode: str = Query("sort")) -> dict[str, Any]:
         return {
             "mode": "add_cues",
             "source": str(ADD_CUES),
+            "crate": crate or "",
+            "crates": crate_names,
+            "default_crate": _profile.DEFAULT_ADD_CUES_CRATE if _profile.IS_HOUSE else "",
             "tracks": tracks,
             "counts": {
                 "total": len(tracks),
@@ -982,7 +1171,7 @@ def get_folders(library_name: str, max_depth: int = Query(4, ge=1, le=6)) -> dic
     try:
         return list_library_tree(library_name, max_depth=max_depth)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -1007,7 +1196,7 @@ def post_create_folder(body: CreateFolderRequest) -> dict[str, Any]:
         )
         return {"ok": True, "folder": created}
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except FileExistsError as exc:
@@ -1055,7 +1244,7 @@ def post_undo(body: UndoRequest) -> dict[str, Any]:
         )
         return result
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except FileExistsError as exc:
@@ -1182,6 +1371,7 @@ def post_grid_align_attempt(body: GridAlignAttemptRequest) -> dict[str, Any]:
 
 
 @app.post("/api/set-beatgrid")
+@with_save_status("/api/set-beatgrid")
 def post_set_beatgrid(body: SetBeatgridRequest) -> dict[str, Any]:
     """Drag-align: write a new '1' (downbeat) into VirtualDJ for this track."""
     try:
@@ -1210,7 +1400,7 @@ def post_set_beatgrid(body: SetBeatgridRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1228,12 +1418,14 @@ def post_set_beatgrid(body: SetBeatgridRequest) -> dict[str, Any]:
 
 
 @app.post("/api/scale-loop")
+@with_save_status("/api/scale-loop")
 def post_scale_loop(body: ScaleLoopRequest) -> dict[str, Any]:
-    """Halve (factor=0.5) or double (factor=2) a loop Size in VirtualDJ."""
+    """Scale a loop Size in VirtualDJ: 0.5 = half, 2 = double, or any ratio newBeats/oldBeats
+    (phrase-snapped end-edge resize). Result is clamped to 1..256 beats."""
     factor = float(body.factor)
-    if abs(factor - 0.5) > 1e-9 and abs(factor - 2.0) > 1e-9:
+    if not (1.0 / 64.0 <= factor <= 64.0):
         raise HTTPException(
-            status_code=400, detail="factor must be 0.5 (half) or 2 (double)"
+            status_code=400, detail="factor must be between 1/64 and 64 (0.5 = half, 2 = double)"
         )
     try:
         result = scale_loop_point(
@@ -1265,7 +1457,7 @@ def post_scale_loop(body: ScaleLoopRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1283,6 +1475,7 @@ def post_scale_loop(body: ScaleLoopRequest) -> dict[str, Any]:
 
 
 @app.post("/api/set-cue-color")
+@with_save_status("/api/set-cue-color")
 def post_set_cue_color(body: SetCueColorRequest) -> dict[str, Any]:
     """Change the Color of one cue or loop in VirtualDJ."""
     kind = (body.kind or "").strip().lower()
@@ -1320,7 +1513,7 @@ def post_set_cue_color(body: SetCueColorRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1338,6 +1531,7 @@ def post_set_cue_color(body: SetCueColorRequest) -> dict[str, Any]:
 
 
 @app.post("/api/move-poi")
+@with_save_status("/api/move-poi")
 def post_move_poi(body: MovePoiRequest) -> dict[str, Any]:
     """Move a cue or loop start time in VirtualDJ (drag-to-reposition)."""
     kind = (body.kind or "").strip().lower()
@@ -1373,7 +1567,7 @@ def post_move_poi(body: MovePoiRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1395,6 +1589,7 @@ def post_move_poi(body: MovePoiRequest) -> dict[str, Any]:
 
 
 @app.post("/api/add-cue")
+@with_save_status("/api/add-cue")
 def post_add_cue(body: AddCueRequest) -> dict[str, Any]:
     """Insert one cue at pos (seconds). Does not strip existing markers."""
     try:
@@ -1424,7 +1619,7 @@ def post_add_cue(body: AddCueRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1442,6 +1637,7 @@ def post_add_cue(body: AddCueRequest) -> dict[str, Any]:
 
 
 @app.post("/api/add-loop")
+@with_save_status("/api/add-loop")
 def post_add_loop(body: AddLoopRequest) -> dict[str, Any]:
     """Insert one loop at pos (seconds). Does not strip existing markers."""
     try:
@@ -1473,7 +1669,7 @@ def post_add_loop(body: AddLoopRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1491,6 +1687,7 @@ def post_add_loop(body: AddLoopRequest) -> dict[str, Any]:
 
 
 @app.post("/api/rename-poi")
+@with_save_status("/api/rename-poi")
 def post_rename_poi(body: RenamePoiRequest) -> dict[str, Any]:
     """Rename one cue or loop Name in VirtualDJ for this track."""
     kind = (body.kind or "").strip().lower()
@@ -1526,7 +1723,7 @@ def post_rename_poi(body: RenamePoiRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1547,7 +1744,50 @@ def post_rename_poi(body: RenamePoiRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/api/deleted-markers")
+def get_deleted_markers(path: str = Query(...)) -> dict[str, Any]:
+    """Read-only: cues/loops the user deleted for this song (AutoCue retry filter)."""
+    markers = _deleted_markers.list_for_path(path)
+    return {
+        "ok": True,
+        "path": path,
+        "markers": [{k: v for k, v in m.items() if k != "raw"} for m in markers],
+    }
+
+
+@app.post("/api/restore-deleted-marker")
+@with_save_status("/api/restore-deleted-marker")
+def post_restore_deleted_marker(body: RestoreMarkerRequest) -> dict[str, Any]:
+    """Undo a delete: re-add the exact removed marker and forget the record."""
+    rec = _deleted_markers.get_record(body.id)
+    if rec is None or not rec.get("raw"):
+        raise HTTPException(status_code=404, detail="Nothing to restore for that delete")
+    if body.dry_run:
+        return {"ok": True, "dry_run": True, "path": rec["path"], "marker": rec["key"]}
+    try:
+        result = restore_poi_point(
+            rec["path"], raw=rec["raw"], allow_vdj_running=body.allow_vdj_running
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _deleted_markers.remove_record(body.id)
+    append_action(
+        "restore_cue",
+        source_path=rec["path"],
+        name=Path(rec["path"]).name,
+        details={"kind": rec.get("kind"), "pos": rec.get("pos"), "name": rec.get("name")},
+    )
+    return {"ok": True, "result": result}
+
+
 @app.post("/api/delete-cue")
+@with_save_status("/api/delete-cue")
 def post_delete_cue(body: DeleteCueRequest) -> dict[str, Any]:
     """Delete one manual cue or loop from VirtualDJ for this track."""
     kind = (body.kind or "").strip().lower()
@@ -1579,11 +1819,18 @@ def post_delete_cue(body: DeleteCueRequest) -> dict[str, Any]:
                     "database_backup": result.get("database_backup"),
                 },
             )
+            removed = result.get("removed")
+            if isinstance(removed, dict):
+                try:
+                    entry = _deleted_markers.record_deleted(body.path, removed)
+                    result = {**result, "deleted_marker_id": entry["id"]}
+                except Exception:  # memory is best-effort; never fail the delete
+                    logging.getLogger(__name__).exception("deleted-marker record failed")
         return {"ok": True, "result": result}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1615,6 +1862,7 @@ def get_notes(path: str = Query(...)) -> dict[str, Any]:
 
 
 @app.post("/api/notes")
+@with_save_status("/api/notes")
 def post_notes(body: NotesRequest) -> dict[str, Any]:
     """Live-update VirtualDJ <Comment> notes for a track."""
     try:
@@ -1641,7 +1889,7 @@ def post_notes(body: NotesRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1651,6 +1899,7 @@ def post_notes(body: NotesRequest) -> dict[str, Any]:
 
 
 @app.post("/api/halve-bpm")
+@with_save_status("/api/halve-bpm")
 def post_halve_bpm(body: HalveBpmRequest) -> dict[str, Any]:
     """
     Halve VDJ musical BPM for a track (double-time fix: 136 → 68).
@@ -1680,7 +1929,7 @@ def post_halve_bpm(body: HalveBpmRequest) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1729,6 +1978,7 @@ def post_recommend(body: RecommendRequest) -> dict[str, Any]:
 
 
 @app.post("/api/sort")
+@with_save_status("/api/sort")
 def post_sort(body: SortRequest) -> dict[str, Any]:
     try:
         from sorter.lanes import (
@@ -1738,42 +1988,90 @@ def post_sort(body: SortRequest) -> dict[str, Any]:
             normalize_lane,
         )
 
-        lane = normalize_lane(body.lane)
-        has_folder = bool((body.relative_folder or "").strip() or body.destinations)
-        if not lane and not has_folder:
-            raise ValueError("Pick a lane before sorting (white stays unsorteable)")
-        if not has_folder:
-            body.library = "Zouk"
-            body.relative_folder = folder_for_lane(lane)
-        body.relative_folder = ensure_sort_folder(body.relative_folder, lane)
-        dest_payload = None
-        if body.destinations:
-            dest_payload = [
-                {
-                    "library": d.library,
-                    "relative_folder": ensure_sort_folder(d.relative_folder, lane),
-                }
-                for d in body.destinations
-            ]
-        if not lane:
-            lane = lane_from_folder_path(body.relative_folder)
-        if not lane and dest_payload:
-            for dest in dest_payload:
-                lane = lane_from_folder_path(dest.get("relative_folder"))
-                if lane:
-                    break
-        result = sort_track(
-            body.path,
-            library_name=body.library,
-            relative_folder=body.relative_folder,
-            destinations=dest_payload,
-            dry_run=body.dry_run,
-            allow_vdj_running=body.allow_vdj_running,
-            lane=lane,
-        )
+        if _profile.IS_HOUSE:
+            # House fork: sort COPIES (original stays). Destination = an existing House
+            # subfolder, or a validated NEW folder (capped at 3 without asking Kirill).
+            from sorter.house_folders import resolve_destination_rel
+
+            lane = None
+            body.library = "House"
+            if body.destinations:
+                dest_payload = [
+                    {
+                        "library": "House",
+                        "relative_folder": resolve_destination_rel(
+                            d.relative_folder, new_folder=d.new_folder
+                        ),
+                        "new_folder": bool(d.new_folder),
+                    }
+                    for d in body.destinations
+                ]
+                body.relative_folder = dest_payload[0]["relative_folder"]
+            else:
+                if not (body.relative_folder or "").strip():
+                    raise ValueError(
+                        "Pick a House folder (or 'New folder in House') to copy into."
+                    )
+                body.relative_folder = resolve_destination_rel(body.relative_folder)
+                dest_payload = None
+        else:
+            lane = normalize_lane(body.lane)
+            has_folder = bool((body.relative_folder or "").strip() or body.destinations)
+            if not lane and not has_folder:
+                raise ValueError("Pick a lane before sorting (white stays unsorteable)")
+            if not has_folder:
+                body.library = "Zouk"
+                body.relative_folder = folder_for_lane(lane)
+            body.relative_folder = ensure_sort_folder(body.relative_folder, lane)
+            dest_payload = None
+            if body.destinations:
+                dest_payload = [
+                    {
+                        "library": d.library,
+                        "relative_folder": ensure_sort_folder(d.relative_folder, lane),
+                    }
+                    for d in body.destinations
+                ]
+            if not lane:
+                lane = lane_from_folder_path(body.relative_folder)
+            if not lane and dest_payload:
+                for dest in dest_payload:
+                    lane = lane_from_folder_path(dest.get("relative_folder"))
+                    if lane:
+                        break
+        if _profile.IS_HOUSE and body.also_sauna_fest:
+            from sorter.relocate import sauna_fest_sort_track
+
+            result = sauna_fest_sort_track(
+                body.path,
+                relative_folder=body.relative_folder,
+                destinations=dest_payload,
+                dry_run=body.dry_run,
+                set_folder_name=body.set_folder_name or None,
+            )
+        else:
+            result = sort_track(
+                body.path,
+                library_name=body.library,
+                relative_folder=body.relative_folder,
+                destinations=dest_payload,
+                dry_run=body.dry_run,
+                allow_vdj_running=body.allow_vdj_running,
+                lane=lane,
+            )
         payload = result.to_dict()
+        if _profile.readonly():
+            payload["readonly_forced_dry_run"] = True
+            payload["readonly_message"] = _profile.READONLY_MESSAGE
         if not body.dry_run:
             invalidate_placement_indexes()
+            if _profile.IS_HOUSE and not _profile.readonly() and result.saved:
+                _sorted_state.record_sorted(
+                    body.path,
+                    [d["path"] for d in (result.library_dests or []) if d.get("path")]
+                    + list(result.sets_paths or []),
+                    kind="sauna_fest" if body.also_sauna_fest else "house",
+                )
             append_action(
                 "sort",
                 source_path=body.path,
@@ -1795,6 +2093,7 @@ def post_sort(body: SortRequest) -> dict[str, Any]:
                     "cues_sorted_db_cloned": payload.get("cues_sorted_db_cloned"),
                     "sets_cues_copied": payload.get("sets_cues_copied"),
                     "sets_paths": payload.get("sets_paths"),
+                    "set_copies": list(result.sets_paths or []),
                     "database_updated": payload.get("database_updated"),
                     "stems_moved": payload.get("stems_moved"),
                     "lane": lane,
@@ -1859,6 +2158,97 @@ def post_sort(body: SortRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/api/sort-sauna-fest")
+@with_save_status("/api/sort-sauna-fest")
+def post_sort_sauna_fest(body: SaunaFestSortRequest) -> dict[str, Any]:
+    """HOUSE FORK: copy a song into Sets/Sauna Fest AND a House folder (all-or-nothing)."""
+    from sorter.config import SAUNA_FEST_SET_NAME
+    from sorter.house_folders import resolve_destination_rel
+    from sorter.relocate import sauna_fest_sort_track, sauna_fest_set_dir
+
+    def _log_fail(exc: Exception) -> None:
+        append_action(
+            "sort_sauna_fest",
+            source_path=body.path,
+            name=Path(body.path).name,
+            success=False,
+            error=str(exc),
+            details={"relative_folder": body.relative_folder},
+        )
+
+    try:
+        if not _profile.IS_HOUSE:
+            raise ValueError("Add to Sauna Fest only exists in the House fork.")
+        if body.destinations:
+            dest_payload = [
+                {
+                    "library": "House",
+                    "relative_folder": resolve_destination_rel(
+                        d.relative_folder, new_folder=d.new_folder
+                    ),
+                    "new_folder": bool(d.new_folder),
+                }
+                for d in body.destinations
+            ]
+            rel = dest_payload[0]["relative_folder"]
+        else:
+            if not (body.relative_folder or "").strip():
+                raise ValueError("Pick a House folder (or 'New folder in House') first.")
+            rel = resolve_destination_rel(body.relative_folder)
+            dest_payload = None
+        set_dir = sauna_fest_set_dir(body.set_folder_name or None)
+        result = sauna_fest_sort_track(
+            body.path,
+            relative_folder=rel,
+            destinations=dest_payload,
+            dry_run=body.dry_run,
+            set_folder_name=body.set_folder_name or None,
+        )
+        payload = result.to_dict()
+        payload["sauna_fest_dir"] = str(set_dir)
+        payload["sauna_fest_path"] = (list(result.sets_paths or []) or [None])[0]
+        if _profile.readonly():
+            payload["readonly_forced_dry_run"] = True
+            payload["readonly_message"] = _profile.READONLY_MESSAGE
+        if not body.dry_run and not _profile.readonly():
+            invalidate_placement_indexes()
+            copies = [d["path"] for d in (result.library_dests or []) if d.get("path")]
+            copies += list(result.sets_paths or [])
+            if result.saved:
+                _sorted_state.record_sorted(body.path, copies, kind="sauna_fest")
+            append_action(
+                "sort_sauna_fest",
+                source_path=body.path,
+                dest_path=result.dest_path,
+                name=Path(body.path).name,
+                details={
+                    "relative_folder": rel,
+                    "library_dests": payload.get("library_dests"),
+                    "set_copies": list(result.sets_paths or []),
+                    "set_folder": SAUNA_FEST_SET_NAME if not body.set_folder_name else body.set_folder_name,
+                    "database_updated": payload.get("database_updated"),
+                    "stems_moved": payload.get("stems_moved"),
+                },
+            )
+        return {"ok": True, "result": payload}
+    except PermissionError as exc:
+        _log_fail(exc)
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (FileNotFoundError, KeyError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        _log_fail(exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        _log_fail(exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        _log_fail(exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.post("/api/remove-ready")
 def post_remove_ready(body: RemoveReadyRequest) -> dict[str, Any]:
     """Remove from Ready for Sort only — no library or Cues Sorted placement."""
@@ -1898,7 +2288,8 @@ def post_remove_ready(body: RemoveReadyRequest) -> dict[str, Any]:
 def post_delete_add_cues(body: DeleteAddCuesRequest) -> dict[str, Any]:
     """
     Delete an Add Cues track entirely: audio + stems to Trash, and remove the
-    VirtualDJ Song entry (cues + loops for that path).
+    VirtualDJ Song entry (cues + loops for that path). Inbox deletes do not
+    remove the Sets/Pajamathon copy — use Delete from Pajamathon for that.
     """
     try:
         result = delete_add_cues_track(
@@ -1921,6 +2312,9 @@ def post_delete_add_cues(body: DeleteAddCuesRequest) -> dict[str, Any]:
                     extra_deleted=[source.name],
                     dry_run=body.dry_run,
                     to_trash=body.to_trash,
+                    # Inbox delete is cleanup after cueing / Add To Set.
+                    # Set copies are removed only via Delete from Pajamathon.
+                    propagate_to_set=False,
                 )
         if not body.dry_run:
             append_action(
@@ -2439,7 +2833,6 @@ def post_promote(body: PromoteRequest) -> dict[str, Any]:
                     "destination_stage": body.destination_stage,
                     "database_updated": payload.get("database_updated"),
                     "stems_moved": payload.get("stems_moved"),
-                    "lane": lane,
                 },
             )
         return {"ok": True, "result": payload}
@@ -2504,7 +2897,6 @@ def post_demote_ready(body: DemoteReadyRequest) -> dict[str, Any]:
                     "subfolder": body.subfolder,
                     "database_updated": payload.get("database_updated"),
                     "stems_moved": payload.get("stems_moved"),
-                    "lane": lane,
                 },
             )
         return {"ok": True, "result": payload}
@@ -2619,6 +3011,7 @@ def practice_best(
     min_overall: float = Query(7.0),
     saved_only: bool = Query(False),
     min_priority: int = Query(0, ge=0, le=5),
+    hide_live_played: bool = Query(False),
 ) -> dict[str, Any]:
     """Cross-mix shortlist from Gemini rankings + user priority tiers."""
     try:
@@ -2629,9 +3022,21 @@ def practice_best(
             saved_only=saved_only,
             min_priority=min_priority,
         )
+        hidden = 0
+        live_played_error = ""
+        try:
+            items, hidden = filter_best_items_hide_live_played(
+                items, hide=hide_live_played
+            )
+        except Exception as exc:
+            log.exception("Failed to annotate live-set plays for Best for set")
+            live_played_error = str(exc)
         return {
             "items": items,
             "count": len(items),
+            "hidden_live_played": hidden,
+            "hide_live_played": hide_live_played,
+            "live_played_error": live_played_error,
             "prefix": prefix,
             "min_overall": min_overall,
             "saved_only": saved_only,
@@ -2681,7 +3086,7 @@ def practice_score_update(req: PracticeScoreUpdateRequest) -> dict[str, Any]:
         )
         return {"score": row}
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=(str(exc.args[0]) if exc.args else str(exc))) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -2958,6 +3363,29 @@ def assemble_export() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/api/cover")
+def get_cover(
+    path: str = Query(...),
+    artist: str = Query(""),
+    title: str = Query(""),
+) -> Response:
+    """Album cover for the song header. Read-only: VDJ cover cache first, then embedded art
+    (ffmpeg extract into our own cache dir). 204 (no content) means "keep the placeholder"."""
+    from sorter.cover_art import find_cover
+
+    hit = find_cover(path, artist=artist, title=title)
+    if hit is None:
+        # "No art" is a normal answer, not an error: 204 keeps the placeholder with no 404 in the log/console.
+        return Response(status_code=204, headers={"Cache-Control": "private, max-age=300"})
+    suffix = hit.suffix.lower()
+    media = "image/png" if suffix == ".png" else "image/jpeg"
+    return FileResponse(
+        hit,
+        media_type=media,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @app.get("/api/audio")
 def get_audio(path: str = Query(...)) -> FileResponse:
     audio = _assert_under_cues(Path(path))
@@ -3012,6 +3440,94 @@ def get_meta(path: str = Query(...)) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+class StemAuditRequest(BaseModel):
+    scope: str = "all"
+    skip_scanned: bool = True
+
+
+class StemCheckRequest(BaseModel):
+    path: str
+
+
+class StemDeleteRequest(BaseModel):
+    paths: list[str]
+
+
+@app.get("/api/stems/inventory")
+def stems_inventory() -> dict[str, Any]:
+    try:
+        return {"ok": True, **stem_inventory()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/stems/audit")
+def stems_audit_start(body: StemAuditRequest) -> dict[str, Any]:
+    try:
+        job = start_stem_audit_job(
+            scope=body.scope, skip_scanned=body.skip_scanned
+        )
+        return {"ok": True, "job": job}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/stems/audit")
+def stems_audit_latest() -> dict[str, Any]:
+    return {"ok": True, "job": latest_stem_audit_job()}
+
+
+@app.get("/api/stems/audit/{job_id}")
+def stems_audit_status(job_id: str) -> dict[str, Any]:
+    job = get_stem_audit_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown stem audit job")
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/stems/audit/{job_id}/cancel")
+def stems_audit_cancel(job_id: str) -> dict[str, Any]:
+    try:
+        job = cancel_stem_audit_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown stem audit job") from None
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/stems/check")
+def stems_check(body: StemCheckRequest) -> dict[str, Any]:
+    try:
+        return {"ok": True, "track": check_one_stem(body.path)}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/stems/delete")
+def stems_delete(body: StemDeleteRequest) -> dict[str, Any]:
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="No sidecar paths to delete")
+    try:
+        result = delete_stem_sidecars(body.paths)
+        append_action(
+            "delete_stems",
+            name=f"{result['deleted']} sidecars",
+            details={"paths": result.get("paths") or []},
+        )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.middleware("http")
 async def no_store_ui_assets(request, call_next):
     response = await call_next(request)
@@ -3022,15 +3538,65 @@ async def no_store_ui_assets(request, call_next):
     return response
 
 
+_NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"}
+_STATIC_MEM: dict[str, tuple[int, int, bytes]] = {}  # resolved path -> (mtime_ns, size, bytes)
+_STATIC_MEM_MAX = 6 * 1024 * 1024
+
+
+def _static_response(file_path: Path) -> Response:
+    """Serve a UI asset straight from memory on the event loop (no worker thread).
+
+    The page, its CSS and JS must keep loading even when every worker thread is busy (a long save, an
+    ML ingest, a copy). Starlette's StaticFiles / sync endpoints need a worker thread for each file, so a
+    saturated pool left the page unstyled and the API fetches failing. A stat() + cached bytes cannot block.
+    """
+    st = file_path.stat()
+    if st.st_size > _STATIC_MEM_MAX:
+        return FileResponse(file_path, headers=_NO_STORE)
+    key = str(file_path)
+    hit = _STATIC_MEM.get(key)
+    if hit is None or hit[0] != st.st_mtime_ns or hit[1] != st.st_size:
+        hit = (st.st_mtime_ns, st.st_size, file_path.read_bytes())
+        _STATIC_MEM[key] = hit
+    media, _ = mimetypes.guess_type(str(file_path))
+    if file_path.suffix == ".js":
+        media = "text/javascript"
+    return Response(content=hit[2], media_type=media or "application/octet-stream", headers=_NO_STORE)
+
+
+@app.get("/api/ping")
+async def api_ping() -> dict[str, Any]:
+    """Event-loop-only liveness probe (never waits for a worker thread): the UI's 'server back?' check."""
+    return {"ok": True, "ui_build": UI_BUILD}
+
+
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(
-        STATIC_DIR / "index.html",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Pragma": "no-cache",
-        },
-    )
+async def index() -> Response:
+    return _static_response(STATIC_DIR / "index.html")
+
+
+@app.get("/static/{rel_path:path}")
+async def static_asset(rel_path: str) -> Response:
+    base = STATIC_DIR.resolve()
+    target = (STATIC_DIR / rel_path).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return _static_response(target)
+
+
+@app.on_event("startup")
+async def _more_worker_threads() -> None:
+    """Default is 40 worker threads; long saves/copies hold some, so keep plenty free for quick reads."""
+    try:
+        import anyio.to_thread
+
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 200
+    except Exception:  # pragma: no cover - tuning only
+        logging.getLogger(__name__).exception("could not raise the worker thread limit")
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

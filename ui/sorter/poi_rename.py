@@ -12,6 +12,7 @@ from .autocue_path import ensure_autocue_on_path
 from .config import CUES_ROOT, LIBRARIES, VDJ_DATABASE
 from .relocate import is_virtualdj_running, summarize_cues
 from .db_lock import vdj_db_write
+from .safe_write import safe_rewrite_song
 from .cue_edit import (  # reuse matchers / song span helpers
     POS_TOLERANCE,
     _assert_allowed,
@@ -26,7 +27,6 @@ from vdj_database_safety import (  # noqa: E402
     _poi_attr,
     parse_manual_poi_tag,
     read_vdj_database_text,
-    rewrite_song_xml_in_database,
 )
 
 _NAME_ATTR_RE = re.compile(r'(\bName\s*=\s*")([^"]*)(")', re.IGNORECASE)
@@ -183,7 +183,17 @@ def set_poi_name(
         shutil.copy2(db, backup)
 
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=True)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=song_xml, validate=True
+        )
+    from .cue_edit import confirm_readback
+
+    wanted = str(change["name_after"])
+    kind_w = change["kind"]
+    confirm_readback(
+        audio, db, source_path, "Rename",
+        lambda ms: any(m.get("kind") == kind_w and str(m.get("name")) == wanted for m in ms),
+    )
     after = summarize_cues(audio, db)
 
     return {

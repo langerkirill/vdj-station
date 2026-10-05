@@ -14,6 +14,7 @@ from .autocue_path import ensure_autocue_on_path
 from .config import CUES_ROOT, LIBRARIES, VDJ_DATABASE, assert_existing_audio
 from .relocate import is_virtualdj_running, summarize_cues
 from .db_lock import vdj_db_write
+from .safe_write import safe_rewrite_song
 
 ensure_autocue_on_path()
 
@@ -24,7 +25,6 @@ from vdj_database_safety import (  # noqa: E402
     _find_song_span,
     normalize_database_path,
     read_vdj_database_text,
-    rewrite_song_xml_in_database,
 )
 
 
@@ -140,7 +140,9 @@ def set_track_comment(
         shutil.copy2(db, backup)
 
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=True)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=song_xml, validate=True
+        )
     after = summarize_cues(audio, db)
 
     return {

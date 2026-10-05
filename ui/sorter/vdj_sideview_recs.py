@@ -273,6 +273,16 @@ def write_sideview_recs(result: dict[str, Any]) -> dict[str, Any]:
 
     Returns paths written and shortcut status.
     """
+    from . import profile as _profile
+
+    if _profile.readonly() or _profile.IS_HOUSE:
+        # House fork: never write My Lists / settings.xml / Cues *.vdjfolder.
+        return {
+            "ok": False,
+            "skipped": "read-only (House fork does not write VDJ Sideview lists)",
+            "written": {},
+            "count": 0,
+        }
     recs = (result or {}).get("recommendations") or {}
     written: dict[str, str] = {}
     combined: list[dict[str, Any]] = []

@@ -377,24 +377,9 @@ class AppJsPlacementCallsiteTests(unittest.TestCase):
         )
         self.assertNotIn("in_sets", body)
 
-    def test_add_to_pajamathon_already_exists_is_not_an_error(self) -> None:
-        body = _js_function_body(self.js, "addTrackToPajamathon")
-        self.assertIn("already_exists", body)
-        self.assertIn("applyExistingSetPlacement", body)
-        exists_at = body.index("already_exists")
-        window = body[exists_at : exists_at + 500]
-        self.assertNotIn(
-            '"error"',
-            window,
-            "already in Pajamathon must paint the row, not setStatus(..., error)",
-        )
-        first_already = body.index("Already in Pajamathon")
-        self.assertNotIn('"error"', body[first_already : first_already + 180])
-        self.assertIn(
-            "currentTrack()?.path !== track.path",
-            body,
-            "do not paint Already-in-Pajamathon onto a different selected track",
-        )
+    def test_add_to_pajamathon_is_gone_from_the_house_ui(self) -> None:
+        self.assertNotIn("addTrackToPajamathon", self.js)
+        self.assertNotIn("Add to Pajamathon", self.js)
 
     def test_cue_copy_receipt_lists_destinations(self) -> None:
         out = _node_placements(
@@ -449,7 +434,7 @@ console.log(JSON.stringify({
         for name, nxt in (
             ("deleteLibraryPlacement", "function allPlacementHits"),
             ("copyCuesToPlacement", "async function copyCuesToAllPlacements"),
-            ("copyCuesToAllPlacements", "async function addTrackToPajamathon"),
+            ("copyCuesToAllPlacements", "function renderReviewPanel"),
         ):
             start = self.js.index(f"async function {name}")
             end = self.js.index(nxt)

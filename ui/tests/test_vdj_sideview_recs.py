@@ -12,7 +12,30 @@ from sorter.vdj_sideview_recs import (
 )
 
 
+class HouseSideviewSkipTests(unittest.TestCase):
+    def test_house_profile_never_writes_vdj_files(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mylists = Path(tmp) / "MyLists"
+            mylists.mkdir()
+            with patch("sorter.vdj_sideview_recs.VDJ_MYLISTS", mylists), patch(
+                "sorter.vdj_sideview_recs.VDJ_CUES_LISTS", mylists
+            ), patch("sorter.vdj_sideview_recs.VDJ_SETTINGS", Path(tmp) / "settings.xml"):
+                out = write_sideview_recs({"source": {}, "recommendations": {}})
+            self.assertFalse(out.get("ok"))
+            self.assertEqual(list(mylists.iterdir()), [])
+
+
 class VdjSideviewRecsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Legacy (non-house) behaviour: the real writer.
+        from sorter import profile as _profile
+
+        patcher = patch.object(_profile, "IS_HOUSE", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_virtual_folder_xml_prefixes_and_escapes(self):
         import tempfile
 

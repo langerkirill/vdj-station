@@ -23,7 +23,59 @@ from sorter.transition_recs import (
 )
 
 
+class TargetBpmWindowTests(unittest.TestCase):
+    """HOUSE FORK: fixed 115-125 BPM window + Camelot compatibility."""
+
+    def _songs(self):
+        base = {"cue_count": 3, "library": "House", "energy_hint": "same"}
+        return [
+            {**base, "path": "/lib/a.flac", "name": "a.flac", "artist": "A", "title": "In Window", "bpm": 121.0, "key": "Am", "camelot": "8A"},
+            {**base, "path": "/lib/b.flac", "name": "b.flac", "artist": "B", "title": "Too Fast", "bpm": 128.0, "key": "Am", "camelot": "8A"},
+            {**base, "path": "/lib/c.flac", "name": "c.flac", "artist": "C", "title": "Too Slow", "bpm": 110.0, "key": "Am", "camelot": "8A"},
+            {**base, "path": "/lib/d.flac", "name": "d.flac", "artist": "D", "title": "No BPM", "bpm": None, "key": "Am", "camelot": "8A"},
+            {**base, "path": "/lib/e.flac", "name": "e.flac", "artist": "E", "title": "Wrong Key", "bpm": 120.0, "key": "F#m", "camelot": "11A"},
+            {**base, "path": "/lib/f.flac", "name": "f.flac", "artist": "F", "title": "Edge 125", "bpm": 125.0, "key": "Em", "camelot": "9A"},
+        ]
+
+    def _run(self, source_bpm):
+        with patch.object(tr, "TARGET_BPM", 120.0), patch.object(
+            tr, "TARGET_BPM_MIN", 115.0
+        ), patch.object(tr, "TARGET_BPM_MAX", 125.0), patch.object(
+            tr, "_scan_library_songs_from_database", return_value=self._songs()
+        ), patch.object(tr, "_history_counts_for", return_value={}), patch.object(
+            tr, "audio_file_exists", return_value=True
+        ), patch.object(
+            tr,
+            "recent_play_windows",
+            return_value={"today": set(), "yesterday": set(), "earlier": set(), "all": set()},
+        ):
+            return build_candidates(
+                source_path="/now/x.flac",
+                source_bpm=source_bpm,
+                source_key="Am",
+                source_artist="X",
+                source_title="Now",
+            )
+
+    def test_window_and_key_filter_regardless_of_source_bpm(self):
+        for src in (77.0, 120.0, 140.0, None):
+            titles = {c.title for c in self._run(src)}
+            self.assertEqual(titles, {"In Window", "Edge 125"}, src)
+
+    def test_window_helper(self):
+        self.assertTrue(tr.bpm_in_target_window(115.0))
+        self.assertTrue(tr.bpm_in_target_window(125.0))
+        self.assertFalse(tr.bpm_in_target_window(125.5))
+        self.assertFalse(tr.bpm_in_target_window(None))
+
+
 class TransitionRecsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Legacy source-relative BPM mode (±tolerance around the playing track).
+        patcher = patch.object(tr, "TARGET_BPM", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_build_candidates_filters_bpm_and_key(self):
         songs = [
             {
@@ -492,7 +544,7 @@ class TransitionRecsTests(unittest.TestCase):
                 source_title="Ready for Love",
                 source_genre="neo-soul",
                 source_vibe="Add Cues / Screenshots",
-                source_genre_family="rnb_soul_zouk",
+                source_genre_family="vocal_soul",
                 bpm_tolerance=5,
             )
         by_artist = {c.artist: c for c in cands}
@@ -508,7 +560,7 @@ class TransitionRecsTests(unittest.TestCase):
 
         guess = {
             "genre": "alternative R&B",
-            "family": "rnb_soul_zouk",
+            "family": "vocal_soul",
             "confidence": 0.84,
             "reason": "modern vocal R&B",
             "cached": False,
@@ -533,10 +585,10 @@ class TransitionRecsTests(unittest.TestCase):
             )
         guess_fn.assert_called_once()
         self.assertEqual(build.call_args.kwargs["source_genre"], "alternative R&B")
-        self.assertEqual(build.call_args.kwargs["source_genre_family"], "rnb_soul_zouk")
+        self.assertEqual(build.call_args.kwargs["source_genre_family"], "vocal_soul")
         self.assertEqual(out["source"]["genre"], "alternative R&B")
         self.assertEqual(out["source"]["genre_source"], "gemini")
-        self.assertEqual(out["source"]["genre_family"], "rnb_soul_zouk")
+        self.assertEqual(out["source"]["genre_family"], "vocal_soul")
 
     def test_recommend_skips_guess_when_folder_genre_is_clear(self):
         class _Cues:
@@ -597,7 +649,7 @@ class TransitionRecsTests(unittest.TestCase):
             "genre": "zouk",
             "vibe": "Chill",
             "genre_source": "tag",
-            "genre_family": "rnb_soul_zouk",
+            "genre_family": "vocal_soul",
             "cue_count": 3,
         }
 

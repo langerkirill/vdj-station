@@ -19,6 +19,8 @@ from typing import Any, Dict, Iterable, List
 from vdj_database_safety import (
     MANUAL_CUE_TYPES,
     VDJ_DATABASE_ROOT,
+    assert_crlf_bytes,
+    assert_vdj_song_form,
     database_integrity_stats,
     serialize_vdj_database,
     validate_database_replacement,
@@ -54,15 +56,9 @@ class TrackPatchResult:
 
 
 def is_virtualdj_running() -> bool:
-    result = subprocess.run(
-        ["pgrep", "-fl", "VirtualDJ|virtualdj"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0 and any(
-        "virtualdj" in line.lower() for line in result.stdout.splitlines()
-    )
+    from vdj_database_safety import is_virtualdj_running as _shared
+
+    return _shared()
 
 
 def load_patch(path: os.PathLike | str) -> Dict[str, Any]:
@@ -238,6 +234,10 @@ def write_checked_database(
             encoding="utf-8",
             newline="",
         )
+        # HARD GATE: VirtualDJ rejects any bare-LF line; refuse before replacing.
+        _cand = temp_path.read_bytes()
+        assert_crlf_bytes(_cand, "patched database candidate")
+        assert_vdj_song_form(_cand, "patched database candidate")
         candidate_stats = validate_database_replacement(temp_path, original_stats)
         candidate_root = parse_database(temp_path).getroot()
         for track_patch in patch["tracks"]:

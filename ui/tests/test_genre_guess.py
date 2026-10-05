@@ -18,7 +18,7 @@ class GenreGuessTests(unittest.TestCase):
             payload = {
                 "label:rubi seadoo": {
                     "genre": "alternative R&B",
-                    "family": "rnb_soul_zouk",
+                    "family": "vocal_soul",
                     "confidence": 0.88,
                     "reason": "contemporary vocal R&B",
                 }
@@ -29,7 +29,7 @@ class GenreGuessTests(unittest.TestCase):
             ):
                 out = gg.guess_genre(artist="Rubí", title="Seadoo", path="/inbox/x.m4a")
         self.assertEqual(out["genre"], "alternative R&B")
-        self.assertEqual(out["family"], "rnb_soul_zouk")
+        self.assertEqual(out["family"], "vocal_soul")
         self.assertTrue(out["cached"])
 
     def test_network_result_is_cached(self):
@@ -37,7 +37,7 @@ class GenreGuessTests(unittest.TestCase):
             cache = Path(tmp) / "genre_guesses.json"
             guess = {
                 "genre": "organic tribal",
-                "family": "psy_tribal_world",
+                "family": "psy_world",
                 "confidence": 0.91,
                 "reason": "Desert Dwellers live in the tribal/psy pocket",
             }
@@ -103,7 +103,7 @@ class GenreGuessTests(unittest.TestCase):
             )
             fresh = {
                 "genre": "alternative R&B",
-                "family": "rnb_soul_zouk",
+                "family": "vocal_soul",
                 "confidence": 0.8,
                 "reason": "retry",
             }
@@ -120,7 +120,7 @@ class GenreGuessTests(unittest.TestCase):
             "guess_genre",
             return_value={
                 "genre": "alternative R&B",
-                "family": "rnb_soul_zouk",
+                "family": "vocal_soul",
                 "confidence": 0.8,
                 "reason": "ok",
                 "cached": False,
@@ -136,10 +136,10 @@ class GenreGuessTests(unittest.TestCase):
         self.assertEqual(guess.call_args.kwargs["genre"], "")
 
     def test_normalize_family_from_free_text(self):
-        self.assertEqual(gg.normalize_family("R&B / neo-soul"), "rnb_soul_zouk")
-        self.assertEqual(gg.normalize_family("tribal psy"), "psy_tribal_world")
-        self.assertEqual(gg.normalize_family("deep house"), "house_dance")
-        self.assertEqual(gg.normalize_family("rnb_soul_zouk"), "rnb_soul_zouk")
+        self.assertEqual(gg.normalize_family("R&B / neo-soul"), "vocal_soul")
+        self.assertEqual(gg.normalize_family("tribal psy"), "psy_world")
+        self.assertEqual(gg.normalize_family("deep house"), "house")
+        self.assertEqual(gg.normalize_family("vocal_soul"), "vocal_soul")
         self.assertEqual(gg.normalize_family("jazz fusion"), "other")
 
     def test_resolve_skips_gemini_when_path_is_clear(self):
@@ -152,7 +152,7 @@ class GenreGuessTests(unittest.TestCase):
             )
         guess.assert_not_called()
         self.assertEqual(out["genre_source"], "path")
-        self.assertEqual(out["genre_family"], "psy_tribal_world")
+        self.assertEqual(out["genre_family"], "psy_world")
         self.assertEqual(out["genre"], "")
 
     def test_resolve_uses_tag_without_guessing(self):
@@ -166,7 +166,7 @@ class GenreGuessTests(unittest.TestCase):
         guess.assert_not_called()
         self.assertEqual(out["genre_source"], "tag")
         self.assertEqual(out["genre"], "R&B")
-        self.assertEqual(out["genre_family"], "rnb_soul_zouk")
+        self.assertEqual(out["genre_family"], "vocal_soul")
 
     def test_resolve_guesses_when_inbox_path_is_unclear(self):
         with patch.object(
@@ -174,7 +174,7 @@ class GenreGuessTests(unittest.TestCase):
             "guess_genre",
             return_value={
                 "genre": "alternative R&B",
-                "family": "rnb_soul_zouk",
+                "family": "vocal_soul",
                 "confidence": 0.84,
                 "reason": "modern vocal R&B",
                 "cached": False,
@@ -190,7 +190,7 @@ class GenreGuessTests(unittest.TestCase):
         guess.assert_called_once()
         self.assertEqual(out["genre"], "alternative R&B")
         self.assertEqual(out["genre_source"], "gemini")
-        self.assertEqual(out["genre_family"], "rnb_soul_zouk")
+        self.assertEqual(out["genre_family"], "vocal_soul")
         self.assertEqual(out["vibe"], "Add Cues / Screenshots 7-15-26")
 
 

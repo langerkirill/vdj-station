@@ -173,6 +173,11 @@ class ParsePoisTests(unittest.TestCase):
 
 
 class CandidateTimingRankTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch.object(tr, "TARGET_BPM", None)  # legacy source-relative mode
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_build_candidates_boosts_complementary_drum_fill(self):
         songs = [
             {
@@ -231,7 +236,7 @@ class CandidateTimingRankTests(unittest.TestCase):
                 source_title="Seadoo",
                 source_genre="alternative R&B",
                 source_vibe="Add Cues",
-                source_genre_family="rnb_soul_zouk",
+                source_genre_family="vocal_soul",
                 source_cues=source_cues,
                 source_length=240.0,
             )

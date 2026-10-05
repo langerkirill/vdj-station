@@ -345,24 +345,41 @@ def todays_history_plays() -> list[tuple[int, str, str, str]]:
     return history_plays_on_dates({datetime.now().date()})
 
 
+def event_play_dates(today: date | None = None) -> set[date]:
+    """Friday and Saturday of this gig weekend. Never Wednesday or Thursday."""
+    today_d = today or datetime.now().date()
+    weekday = today_d.weekday()  # Mon=0 … Fri=4, Sat=5, Sun=6
+    if weekday <= 4:
+        friday = today_d + timedelta(days=(4 - weekday))
+        return {friday, friday + timedelta(days=1)}
+    if weekday == 5:
+        return {today_d - timedelta(days=1), today_d}
+    return {today_d - timedelta(days=2), today_d - timedelta(days=1)}
+
+
 def recent_history_play_groups(
     *,
     days: int = 3,
     today: date | None = None,
 ) -> dict[str, list[tuple[int, str, str, str]]]:
-    """Split recent History plays into today / yesterday / earlier-in-window.
+    """Split gig-night History plays into today / yesterday / earlier.
 
-    ``days`` is a rolling calendar window ending today (3 = Fri–Sat event plus
-    the day before). Each play is listed once; today wins, then yesterday.
+    Only Friday and Saturday of this weekend count. Midweek (Wed/Thu) stays
+    eligible for Recs. ``days`` is ignored; kept for older callers.
     """
-    window = max(1, int(days))
+    del days
     today_d = today or datetime.now().date()
-    yesterday = today_d - timedelta(days=1)
-    all_dates = {today_d - timedelta(days=i) for i in range(window)}
-    earlier_dates = all_dates - {today_d, yesterday}
+    event_dates = {d for d in event_play_dates(today_d) if d <= today_d}
 
-    today_plays = history_plays_on_dates({today_d})
-    yesterday_plays = history_plays_on_dates({yesterday}) if window >= 2 else []
+    today_plays = (
+        history_plays_on_dates({today_d}) if today_d in event_dates else []
+    )
+    prior_dates = {d for d in event_dates if d < today_d}
+    yesterday_date = today_d - timedelta(days=1)
+    yesterday_dates = {d for d in prior_dates if d == yesterday_date}
+    earlier_dates = prior_dates - yesterday_dates
+
+    yesterday_plays = history_plays_on_dates(yesterday_dates) if yesterday_dates else []
     earlier_plays = history_plays_on_dates(earlier_dates) if earlier_dates else []
 
     today_stamps = {
@@ -385,12 +402,11 @@ def recent_history_play_groups(
         if (p[1].lower(), (p[2] or "").lower(), (p[3] or "").lower())
         not in yest_stamps
     ]
-    all_plays = today_plays + yesterday_only + earlier_only
     return {
         "today": today_plays,
         "yesterday": yesterday_only,
         "earlier": earlier_only,
-        "all": all_plays,
+        "all": today_plays + yesterday_only + earlier_only,
     }
 
 

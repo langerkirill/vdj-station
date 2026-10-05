@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from xml.sax.saxutils import escape
 import tempfile
 import unittest
 from pathlib import Path
@@ -192,10 +193,10 @@ class DeleteAddCuesTrackTests(unittest.TestCase):
             db.write_bytes(
                 (
                     "<VirtualDJ_Database>\r\n"
-                    f'<Song FilePath="{audio}">\r\n'
+                    f'<Song FilePath="{escape(str(audio))}">\r\n'
                     '  <Poi Name="Intro" Pos="0.0" Num="1" Type="cue" />\r\n'
                     "</Song>\r\n"
-                    f'<Song FilePath="{lib}">\r\n'
+                    f'<Song FilePath="{escape(str(lib))}">\r\n'
                     '  <Poi Name="Lib" Pos="1.0" Num="1" Type="cue" />\r\n'
                     "</Song>\r\n"
                     "</VirtualDJ_Database>\r\n"
@@ -220,7 +221,7 @@ class DeleteAddCuesTrackTests(unittest.TestCase):
             self.assertTrue(inbox.is_file())
             text = db.read_text(encoding="utf-8")
             self.assertNotIn(str(audio), text)
-            self.assertIn(str(lib), text)
+            self.assertIn(escape(str(lib)), text)
 
 
 

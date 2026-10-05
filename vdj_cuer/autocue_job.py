@@ -21,8 +21,8 @@ WRITE_SCOPE_CUES = "cues"
 WRITE_SCOPE_LOOPS = "loops"
 
 STEMS_REQUIRED_MESSAGE = (
-    "Blocked: analyze stems in VirtualDJ first "
-    "(needs adjacent .vdjstems beside the audio)"
+    "Go make stems in VirtualDJ first: play the track with stems on "
+    "(or Analyze stems) until an adjacent .vdjstems file appears, then AutoCue again."
 )
 
 
@@ -145,12 +145,6 @@ def run_one(
     db = database_path or str(
         Path.home() / "Library" / "Application Support" / "VirtualDJ" / "database.xml"
     )
-    stems_path = Path(f"{audio}.vdjstems")
-    has_stems = stems_path.is_file()
-    if not has_stems:
-        print(STEMS_REQUIRED_MESSAGE)
-        return _empty_result(error=STEMS_REQUIRED_MESSAGE)
-
     scope = (write_scope or WRITE_SCOPE_ALL).strip().lower()
     if scope in {"both", "cues_only", "cues-only"}:
         scope = WRITE_SCOPE_ALL if scope == "both" else WRITE_SCOPE_CUES
@@ -158,6 +152,17 @@ def run_one(
         scope = WRITE_SCOPE_LOOPS
     if scope in {"cue"}:
         scope = WRITE_SCOPE_CUES
+
+    stems_path = Path(f"{audio}.vdjstems")
+    has_stems = stems_path.is_file()
+    if not has_stems and scope != WRITE_SCOPE_CUES:
+        print(STEMS_REQUIRED_MESSAGE)
+        return _empty_result(error=STEMS_REQUIRED_MESSAGE)
+    if not has_stems:
+        print(
+            "⚠️  No adjacent .vdjstems — cues-only (loops need VDJ stems)."
+        )
+        stems_skipped = True
 
     cuer = _build_cuer(
         database_path=db,

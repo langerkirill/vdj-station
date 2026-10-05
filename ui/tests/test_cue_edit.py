@@ -48,6 +48,29 @@ class CueEditXmlTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             cue_mod.remove_manual_poi_from_song_xml(xml, kind="cue", pos=99.0, num="9")
 
+    def test_scale_loop_accepts_phrase_resize_ratio(self):
+        song = '<Song FilePath="/a.mp3">\n  <Poi Name="L" Pos="10.000000" Num="-1" Color="1" Type="loop" Size="32.0" Slot="1" />\n</Song>'
+        out, ch = cue_mod.scale_loop_size_in_song_xml(song, pos=10.0, factor=48 / 32, num="-1", name="L", slot="1")
+        self.assertIn('Size="48.0"', out)
+
+    def test_scale_loop_past_the_audio_end_clamps_instead_of_failing(self):
+        song = (
+            '<Song FilePath="/a.mp3">\n  <Infos SongLength="100.000000" />\n  <Scan Bpm="0.500000" />\n'
+            '  <Poi Name="L" Pos="90.000000" Num="-1" Color="1" Type="loop" Size="8.0" Slot="1" />\n</Song>'
+        )
+        # 10 s are left at 0.5 s/beat = 20 beats; doubling 8 -> 16 fits, asking for 64 must clamp to 20
+        fits, ch = cue_mod.scale_loop_size_in_song_xml(song, pos=90.0, factor=2.0, num="-1", slot="1")
+        self.assertEqual(ch["beats_after"], 16.0)
+        self.assertFalse(ch.get("clamped_to_song_end"))
+        out, ch = cue_mod.scale_loop_size_in_song_xml(song, pos=90.0, factor=8.0, num="-1", slot="1")
+        self.assertEqual(ch["beats_after"], 20.0)
+        self.assertTrue(ch["clamped_to_song_end"])
+        self.assertIn('Size="20.0"', out)
+        # the loop now ends exactly at the end of the song; asking for more never errors
+        again, ch2 = cue_mod.scale_loop_size_in_song_xml(out, pos=90.0, factor=2.0, num="-1", slot="1")
+        self.assertEqual(ch2["beats_after"], 20.0)
+        self.assertIn('Size="20.0"', again)
+
     def test_scale_loop_half_and_double(self):
         xml = SAMPLE_SONG.format(path="/music/a.flac")
         half, ch = cue_mod.scale_loop_size_in_song_xml(
@@ -91,7 +114,7 @@ class CueEditXmlTests(unittest.TestCase):
         self.assertEqual(ch["color_name"], "yellow")
         self.assertIn(f'Color="{cue_mod.VDJ_CUE_COLORS["yellow"]}"', out)
         self.assertIn('Name="Drop"', out)
-        self.assertIn('Pos="40.25"', out)
+        self.assertIn('Pos="40.250000"', out)
 
     def test_fill_missing_poi_colors_inserts_only_bare_tags(self):
         xml = (
@@ -134,7 +157,7 @@ class CueEditXmlTests(unittest.TestCase):
         )
         self.assertAlmostEqual(ch["pos_before"], 16.0)
         self.assertAlmostEqual(ch["pos_after"], 20.5)
-        self.assertIn('Pos="20.5"', out)
+        self.assertIn('Pos="20.500000"', out)
         self.assertIn('Name="Loop A"', out)
         self.assertIn('Pos="48.000000"', out)  # other loop unchanged
 
@@ -146,7 +169,7 @@ class CueEditXmlTests(unittest.TestCase):
         self.assertAlmostEqual(ch["pos_before"], 32.0)
         self.assertAlmostEqual(ch["pos_after"], 40.25)
         self.assertIn('Name="Drop"', out)
-        self.assertIn('Pos="40.25"', out)
+        self.assertIn('Pos="40.250000"', out)
         self.assertIn('Pos="0.100000"', out)  # intro + beatgrid stay
 
     def test_add_cue_poi_uses_next_free_num(self):

@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sorter import vdj_now_playing as np_mod
 from sorter.vdj_now_playing import (
     best_lastplay_from_xml,
+    event_play_dates,
     get_now_playing,
     history_plays_on_dates,
     latest_deck_waveform,
@@ -166,12 +167,32 @@ class NowPlayingParseTests(unittest.TestCase):
         titles = {p[3] for p in plays}
         self.assertEqual(titles, {"Collabo", "The Rhythm of the Night (Jay Frog Remix)"})
 
-    def test_recent_history_play_groups_splits_today_yesterday_earlier(self):
+    def test_event_play_dates_are_friday_and_saturday_only(self):
+        from datetime import date
+
+        self.assertEqual(
+            event_play_dates(date(2026, 8, 29)),  # Saturday
+            {date(2026, 8, 28), date(2026, 8, 29)},
+        )
+        self.assertEqual(
+            event_play_dates(date(2026, 8, 28)),  # Friday
+            {date(2026, 8, 28), date(2026, 8, 29)},
+        )
+        self.assertEqual(
+            event_play_dates(date(2026, 8, 27)),  # Thursday: upcoming gig, not midweek
+            {date(2026, 8, 28), date(2026, 8, 29)},
+        )
+        self.assertEqual(
+            event_play_dates(date(2026, 8, 26)),  # Wednesday
+            {date(2026, 8, 28), date(2026, 8, 29)},
+        )
+
+    def test_recent_history_play_groups_skips_wednesday_and_thursday(self):
         import tempfile
         from datetime import date
         from pathlib import Path
 
-        today = date(2026, 8, 29)
+        today = date(2026, 8, 29)  # Saturday
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "2026-08-29.m3u").write_text(
@@ -186,22 +207,23 @@ class NowPlayingParseTests(unittest.TestCase):
             )
             (root / "2026-08-27.m3u").write_text(
                 "#EXTVDJ:<lastplaytime>10</lastplaytime>"
-                "<artist>Thu</artist><title>Earlier</title>\n/lib/earlier.flac\n",
+                "<artist>Thu</artist><title>Thursday</title>\n/lib/thu.flac\n",
                 encoding="utf-8",
             )
-            (root / "2026-08-20.m3u").write_text(
-                "#EXTVDJ:<lastplaytime>1</lastplaytime>"
-                "<artist>Old</artist><title>TooOld</title>\n/lib/old.flac\n",
+            (root / "2026-08-26.m3u").write_text(
+                "#EXTVDJ:<lastplaytime>5</lastplaytime>"
+                "<artist>Wed</artist><title>Wednesday</title>\n/lib/wed.flac\n",
                 encoding="utf-8",
             )
             with patch("sorter.vdj_now_playing.VDJ_HISTORY_DIR", root):
-                groups = recent_history_play_groups(days=3, today=today)
+                groups = recent_history_play_groups(today=today)
         self.assertEqual([p[3] for p in groups["today"]], ["Now"])
         self.assertEqual([p[3] for p in groups["yesterday"]], ["Yesterday"])
-        self.assertEqual([p[3] for p in groups["earlier"]], ["Earlier"])
+        self.assertEqual(groups["earlier"], [])
         all_titles = {p[3] for p in groups["all"]}
-        self.assertEqual(all_titles, {"Now", "Yesterday", "Earlier"})
-        self.assertNotIn("TooOld", all_titles)
+        self.assertEqual(all_titles, {"Now", "Yesterday"})
+        self.assertNotIn("Thursday", all_titles)
+        self.assertNotIn("Wednesday", all_titles)
 
     def test_now_playing_stamp_is_history_only(self):
         hist = (500, "/played.flac", "P", "Played")

@@ -14,10 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import CUES_ROOT
+from .config import CUES_ROOT, DJ_NOTES_ROOT  # noqa: F401
 
 # Durable log next to the music library (survives app restarts / reinstalls).
-DEFAULT_LOG_PATH = CUES_ROOT / "music-sorter-actions.jsonl"
+# HOUSE FORK: the sort action log lives in the isolated Notes dir, never in Cues/.
+DEFAULT_LOG_PATH = DJ_NOTES_ROOT / "music-sorter-actions.jsonl"
 
 _lock = threading.Lock()
 

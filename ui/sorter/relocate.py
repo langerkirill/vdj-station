@@ -23,6 +23,7 @@ from .config import (
     AUDIO_EXTENSIONS,
     CUE_STAGES,
     CUES_ROOT,
+    CUED_DESTINATION_ROOTS,
     CUES_SORTED,
     LIBRARIES,
     READY_FOR_SORT,
@@ -30,7 +31,10 @@ from .config import (
     VDJ_DATABASE,
 )
 from .db_lock import vdj_db_write
+from .safe_write import safe_clone_song, safe_rewrite_song
 from .cue_readiness import assess_cue_readiness, vdj_bpm_to_actual
+from . import profile as _profile
+from .lanes import ensure_house_sort_folder, lane_from_user_color
 from .musical_key import key_to_camelot, song_key_from_element
 from .library import (
     expand_library_mode,
@@ -57,6 +61,7 @@ from vdj_database_safety import (  # noqa: E402
     atomic_replace_database_parts,
     clone_song_entry_to_path,
     directory_sort_label,
+    insert_song_xml_in_database,
     iter_manual_poi_tags,
     load_song_element,
     normalize_database_path,
@@ -64,12 +69,13 @@ from vdj_database_safety import (  # noqa: E402
     patch_song_infos_and_user2,
     read_vdj_database_text,
     relocate_song_filepath_in_database,
-    rewrite_song_xml_in_database,
+    song_xml_with_new_filepath,
 )
 
 # VirtualDJ ARGB color ints → display names (same palette as AutoCue).
 VDJ_COLOR_NAMES: dict[str, str] = {
     "4278190335": "blue",
+    "4278255615": "lightblue",
     "4278255360": "green",
     "4288020735": "purple",
     "4294967040": "yellow",
@@ -145,6 +151,14 @@ class SortResult:
     lane: str = ""
     lane_color: str = ""
     dest_reused: bool = False
+    # House copy-sort (the original is NEVER moved or changed)
+    copied: bool = False
+    original_kept: bool = False
+    skipped_existing: bool = False
+    sha1: str = ""
+    saved: Optional[bool] = None
+    save_reason: str = ""
+    new_folder_created: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -153,53 +167,10 @@ class SortResult:
 
 
 def is_virtualdj_running() -> bool:
-    """
-    True only when the VirtualDJ *app* appears to be running.
+    """True only when a process whose EXECUTABLE is VirtualDJ is running (comm, not argv)."""
+    from vdj_database_safety import is_virtualdj_running as _shared
 
-    Avoid false positives from:
-    - Docker/Apple ``virtualization`` helpers
-    - Shells/agents whose argv merely *mentions* VirtualDJ (scripts, paths)
-    """
-    try:
-        result = subprocess.run(
-            ["ps", "-ax", "-o", "comm=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except Exception:
-        return False
-
-    for raw in result.stdout.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        # ps: first token is comm, rest is full command
-        parts = line.split(None, 1)
-        comm = parts[0].lower().replace(" ", "")
-        cmd = (parts[1] if len(parts) > 1 else "").lower()
-
-        # Process name is the VirtualDJ binary.
-        if comm in {
-            "virtualdj",
-            "virtualdj8",
-            "virtualdj2021",
-            "virtualdj2022",
-            "virtualdj2023",
-            "virtualdj2024",
-            "virtualdj2025",
-            "virtualdj2026",
-        }:
-            return True
-
-        # macOS app bundle executable (not a random shell that mentions the path).
-        if "virtualdj.app/contents/macos/" in cmd:
-            # Skip long shell wrappers that only reference the path in a script body.
-            if comm in {"zsh", "bash", "sh", "fish", "csh", "tcsh", "python", "python3"}:
-                continue
-            return True
-
-    return False
+    return _shared()
 
 
 def _normalize_path(path: str | Path) -> str:
@@ -678,6 +649,77 @@ def _copy_file_and_stems(source: Path, dest: Path, *, reuse_existing: bool = Fal
     return False
 
 
+def _sha1_file(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha1()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+class _StageTimer:
+    """Wall-clock per stage of a copy-sort, printed to the server log ("why is Copy slow?")."""
+
+    def __init__(self, label: str) -> None:
+        import time as _time
+
+        self._time = _time
+        self.label = label
+        self.t0 = self.last = _time.perf_counter()
+        self.stages: list[tuple[str, float]] = []
+
+    def mark(self, name: str) -> None:
+        now = self._time.perf_counter()
+        self.stages.append((name, now - self.last))
+        self.last = now
+
+    def done(self) -> dict[str, float]:
+        total = self._time.perf_counter() - self.t0
+        out = {k: round(v, 2) for k, v in self.stages}
+        out["total"] = round(total, 2)
+        print(f"[{self.label}] " + " ".join(f"{k}={v}s" for k, v in out.items()), flush=True)
+        return out
+
+
+def copy_file_verified(source: Path, dest: Path, *, source_sha: str | None = None) -> dict[str, Any]:
+    """True copy of audio (+ .vdjstems) with sha1 verification. Never overwrites.
+
+    Returns {copied, skipped_existing, sha1, stems_copied}. A partial/mismatching
+    copy is removed and raises RuntimeError; the source is never touched.
+    """
+    if dest.exists():
+        return {
+            "copied": False,
+            "skipped_existing": True,
+            "sha1": _sha1_file(dest),
+            "stems_copied": False,
+        }
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    want = source_sha or _sha1_file(source)  # the caller already hashed the source: do not read it again
+    tmp = dest.with_name(f".{dest.name}.copying")
+    try:
+        shutil.copyfile(str(source), str(tmp))
+        got = _sha1_file(tmp)
+        if got != want:
+            raise RuntimeError(
+                f"sha1 mismatch after copy ({want} != {got}) — copy removed, original untouched"
+            )
+        shutil.copystat(str(source), str(tmp))
+        tmp.replace(dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    stems_copied = False
+    stems_source = Path(f"{source}.vdjstems")
+    stems_dest = Path(f"{dest}.vdjstems")
+    if stems_source.is_file() and not stems_dest.exists():
+        shutil.copy2(str(stems_source), str(stems_dest))
+        stems_copied = True
+    return {"copied": True, "skipped_existing": False, "sha1": want, "stems_copied": stems_copied}
+
+
 def _remove_audio_and_stems(path: Path) -> None:
     """Best-effort delete of an audio file and its .vdjstems sidecar."""
     try:
@@ -706,10 +748,13 @@ def _normalize_sort_destinations(
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def _add(lib: str, rel: str) -> None:
+    def _add(lib: str, rel: str, new_flag: bool = False) -> None:
         cleaned_rel = (rel or "").strip().strip("/")
         if not cleaned_rel:
             raise ValueError("Each destination needs a relative_folder")
+        if _profile.IS_HOUSE:
+            # Existing House subfolders only, or a validated NEW folder (see house_folders).
+            cleaned_rel = ensure_house_sort_folder(cleaned_rel, new_folder=new_flag)
         # Expand Both → House + Zouk for that folder path.
         for name in expand_library_mode(lib):
             key = (name, cleaned_rel)
@@ -724,9 +769,11 @@ def _normalize_sort_destinations(
         for raw in destinations:
             lib = str(raw.get("library") or "").strip()
             rel = str(raw.get("relative_folder") or raw.get("path") or "").strip()
+            if _profile.IS_HOUSE and not lib:
+                lib = "House"
             if not lib:
                 raise ValueError("Each destination needs a library (House or Zouk)")
-            _add(lib, rel)
+            _add(lib, rel, bool(raw.get("new_folder")))
     else:
         if not relative_folder or not str(relative_folder).strip():
             raise ValueError("relative_folder is required when destinations is omitted")
@@ -765,6 +812,12 @@ def _build_library_destinations(
     )
     dests: list[tuple[str, Path, str]] = []
     for lib, rel in pairs:
+        if _profile.IS_HOUSE:
+            # Existing House subfolder (or validated new one). NOT created here: a new
+            # folder is created only when a track is actually sorted into it.
+            dest_dir = resolve_destination(lib, rel, create=False)
+            dests.append((lib, (dest_dir / filename).resolve(), rel))
+            continue
         dest_dir = resolve_destination(lib, rel, create=create_missing)
         if not dest_dir.is_dir():
             raise FileNotFoundError(
@@ -772,6 +825,354 @@ def _build_library_destinations(
             )
         dests.append((lib, (dest_dir / filename).resolve(), rel))
     return dests
+
+
+def _house_copy_sort(
+    source: Path,
+    *,
+    db: Path,
+    relative_folder: str,
+    destinations: list[dict[str, str]] | None,
+    dry_run: bool,
+) -> SortResult:
+    """HOUSE FORK sort = COPY into existing House subfolders (or a validated new one).
+
+    The original stays where it is. Per destination: sha1-verified true copy
+    (+ .vdjstems), then ONE locked, backup-first, read-back-verified Song clone
+    (cues, loops, beatgrid, color; User2 from the destination folder). Existing
+    destination files/entries are skipped, never overwritten.
+    """
+    from . import house_folders as hf
+
+    pairs = _build_library_destinations(
+        "House",
+        relative_folder,
+        source.name,
+        create_missing=False,
+        destinations=destinations,
+    )
+    cues = summarize_cues(source, db)
+    if not cues.in_database:
+        raise KeyError(f"Track is not in VirtualDJ database: {source}")
+    if not cues.is_cued:
+        raise PermissionError("Track is not cued in VirtualDJ (no manual cue points).")
+    new_flags = {
+        (d.get("relative_folder") or d.get("path") or "").strip().strip("/").lower(): bool(
+            d.get("new_folder")
+        )
+        for d in (destinations or [])
+    }
+    payload = [
+        {"library": lib, "path": str(path), "relative_folder": rel} for lib, path, rel in pairs
+    ]
+    primary_dest = pairs[0][1]
+    if dry_run:
+        return SortResult(
+            source_path=str(source),
+            dest_path=str(primary_dest),
+            stems_moved=Path(f"{source}.vdjstems").is_file(),
+            database_updated=False,
+            database_backup=None,
+            cues=cues,
+            dry_run=True,
+            library_mode="House",
+            library_dests=payload,
+            copied=False,
+            original_kept=True,
+            skipped_existing=any(p.exists() for _l, p, _r in pairs),
+        )
+
+    if is_virtualdj_running():
+        raise RuntimeError(
+            "VirtualDJ is running — refusing to copy-sort (database.xml cannot be "
+            "written safely). Close VirtualDJ completely, then retry."
+        )
+    src_key = _normalize_path(source)
+    _tm = _StageTimer("copy-sort house")
+    src_sha = _sha1_file(source)
+    _tm.mark("hash_source")
+    any_copied = any_skipped = new_created = stems = False
+    backup = None
+    save_reason = ""
+    for lib, dest, rel in pairs:
+        claimed_rel = None
+        copied_here = False
+        try:
+            if dest.exists() and _sha1_file(dest) != src_sha:
+                raise FileExistsError(
+                    f"{dest} already exists and is a DIFFERENT file (sha1 differs) — "
+                    "not overwritten, not registered."
+                )
+            if not dest.parent.is_dir():
+                if not new_flags.get(rel.strip("/").lower()):
+                    raise FileNotFoundError(
+                        f"House folder does not exist: {rel}. Use 'New folder in House'."
+                    )
+                hf.claim_new_folder(rel)  # validates, enforces the 3-folder cap, creates
+                claimed_rel = rel
+                new_created = True
+            info = copy_file_verified(source, dest, source_sha=src_sha)
+            _tm.mark("copy_audio_stems_verify")
+            copied_here = bool(info["copied"])
+            any_copied = any_copied or copied_here
+            any_skipped = any_skipped or bool(info["skipped_existing"])
+            stems = stems or bool(info["stems_copied"])
+            res = safe_clone_song(
+                db,
+                src_key,
+                _normalize_path(dest),
+                validate=True,
+                user_color=_house_user_color(rel),
+            )
+            backup = res.get("backup") or backup
+            _tm.mark("database_clone_write")
+            save_reason = "clone verified in database.xml" if res.get("cloned") else (
+                "already registered — skipped"
+            )
+        except Exception:
+            if copied_here:
+                _remove_audio_and_stems(dest)
+            if claimed_rel:
+                hf.release_new_folder(claimed_rel)
+            raise
+    if not source.is_file():
+        raise RuntimeError("Original is missing after copy-sort — this must never happen")
+    _final_cues = summarize_cues(primary_dest, db)
+    _tm.mark("final_readback")
+    _tm.done()
+    return SortResult(
+        source_path=str(source),
+        dest_path=str(primary_dest),
+        stems_moved=stems,
+        database_updated=True,
+        database_backup=backup,
+        cues=_final_cues,
+        dry_run=False,
+        library_mode="House",
+        library_dests=payload,
+        copied=any_copied,
+        original_kept=True,
+        skipped_existing=any_skipped and not any_copied,
+        sha1=src_sha,
+        saved=True,
+        save_reason=save_reason,
+        new_folder_created=new_created,
+    )
+
+
+def _house_user_color(rel: str | None) -> str | None:
+    """Song-level color (Infos UserColor) for a House destination subfolder, or None."""
+    try:
+        from .house_colors import user_color_for_folder
+
+        return user_color_for_folder(rel)
+    except Exception:
+        return None
+
+
+def sauna_fest_set_dir(set_folder_name: str | None = None) -> Path:
+    """Sets/Sauna Fest (the configured constant). A test may pass a 'ZZ TEST ...' name."""
+    from . import config as _cfg
+
+    name = (set_folder_name or "").strip()
+    if not name or name == _cfg.SAUNA_FEST_SET_NAME:
+        return Path(_cfg.SAUNA_FEST_SET_DIR)
+    if not name.startswith(_cfg.SAUNA_FEST_TEST_PREFIX) or "/" in name or ".." in name:
+        raise ValueError("Only the configured Sauna Fest set folder can be used.")
+    return Path(_cfg.SETS_ROOT) / name
+
+
+def _sauna_fest_copy_sort(
+    source: Path,
+    *,
+    db: Path,
+    relative_folder: str,
+    destinations: list[dict[str, str]] | None,
+    dry_run: bool,
+    set_folder_name: str | None = None,
+) -> SortResult:
+    """HOUSE FORK 'Add to Sauna Fest': COPY into Sets/Sauna Fest AND a House folder.
+
+    All-or-nothing: both targets are pre-flighted (same-name different file = refuse
+    BEFORE anything is copied), both files are sha1-verified copies (+ .vdjstems), and
+    both Songs are registered in ONE locked, backup-first, read-back-verified write
+    (``safe_clone_songs``). If anything fails, every file/folder THIS call created is
+    removed and database.xml is left untouched. Existing identical files / entries are
+    skipped (never duplicated); the original is never touched.
+    User2: the House copy gets its folder label (e.g. ``Chill/Mystical``); the set copy
+    takes the SAME label (like Pajamathon set copies take their origin crate), not "Sets".
+    """
+    from . import house_folders as hf
+    from .safe_write import safe_clone_songs
+
+    set_dir = sauna_fest_set_dir(set_folder_name)
+    pairs = _build_library_destinations(
+        "House", relative_folder, source.name, create_missing=False, destinations=destinations
+    )
+    house_dest = pairs[0][1]
+    house_rel = pairs[0][2]
+    # Mirror the House subfolder structure under the set folder: Sets/Sauna Fest/<same rel>/file
+    set_dest = (set_dir / house_rel / source.name).resolve()
+    cues = summarize_cues(source, db)
+    if not cues.in_database:
+        raise KeyError(f"Track is not in VirtualDJ database: {source}")
+    if not cues.is_cued:
+        raise PermissionError("Track is not cued in VirtualDJ (no manual cue points).")
+    new_flags = {
+        (d.get("relative_folder") or d.get("path") or "").strip().strip("/").lower(): bool(
+            d.get("new_folder")
+        )
+        for d in (destinations or [])
+    }
+    payload = [{"library": "House", "path": str(house_dest), "relative_folder": house_rel}]
+    if dry_run:
+        return SortResult(
+            source_path=str(source),
+            dest_path=str(house_dest),
+            stems_moved=Path(f"{source}.vdjstems").is_file(),
+            database_updated=False,
+            database_backup=None,
+            cues=cues,
+            dry_run=True,
+            library_mode="House+Sauna Fest",
+            library_dests=payload,
+            copied=False,
+            original_kept=True,
+            skipped_existing=house_dest.exists() or set_dest.exists(),
+            sets_paths=[str(set_dest)],
+        )
+    if is_virtualdj_running():
+        raise RuntimeError(
+            "VirtualDJ is running - refusing to copy-sort (database.xml cannot be "
+            "written safely). Close VirtualDJ completely, then retry."
+        )
+    src_key = _normalize_path(source)
+    _tm = _StageTimer("copy-sort house+sauna")
+    src_sha = _sha1_file(source)
+    _tm.mark("hash_source")
+    # Pre-flight BOTH targets before copying anything.
+    same_as_source = set_dest.resolve() == source.resolve()
+    for label, dest in (("House", house_dest), ("Sauna Fest", set_dest)):
+        if label == "Sauna Fest" and same_as_source:
+            continue
+        if dest.exists() and _sha1_file(dest) != src_sha:
+            raise FileExistsError(
+                f"{label}: {dest} already exists and is a DIFFERENT file (sha1 differs) - "
+                "nothing was copied or registered."
+            )
+    claimed_rel = None
+    created_files: list[Path] = []
+    created_set_dirs: list[Path] = []  # set folders THIS call creates (top-down)
+    any_copied = any_skipped = stems = new_created = False
+    try:
+        if not house_dest.parent.is_dir():
+            if not new_flags.get(house_rel.strip("/").lower()):
+                raise FileNotFoundError(
+                    f"House folder does not exist: {house_rel}. Use 'New folder in House'."
+                )
+            hf.claim_new_folder(house_rel)
+            claimed_rel = house_rel
+            new_created = True
+        copy_targets = [house_dest]
+        if not same_as_source:
+            copy_targets.append(set_dest)
+        for dest in copy_targets:
+            if dest is set_dest:
+                chain = []
+                d = set_dest.parent
+                while d != set_dir.parent and not d.is_dir():
+                    chain.append(d)
+                    d = d.parent
+                created_set_dirs = list(reversed(chain))
+            info = copy_file_verified(source, dest, source_sha=src_sha)
+            _tm.mark("copy_audio_stems_verify")
+            if info["copied"]:
+                created_files.append(dest)
+            any_copied = any_copied or bool(info["copied"])
+            any_skipped = any_skipped or bool(info["skipped_existing"])
+            stems = stems or bool(info["stems_copied"])
+        targets = [(_normalize_path(house_dest), None)]
+        if not same_as_source:
+            targets.append((_normalize_path(set_dest), str(house_dest)))
+        res = safe_clone_songs(
+            db, src_key, targets, validate=True, user_color=_house_user_color(house_rel)
+        )
+        _tm.mark("database_clone_write")
+    except Exception as exc:
+        code = getattr(exc, "code", "")
+        if code != "readback_mismatch":  # state after a failed read-back is uncertain: keep files
+            for f in created_files:
+                _remove_audio_and_stems(f)
+            for d in reversed(created_set_dirs):
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+            if claimed_rel:
+                hf.release_new_folder(claimed_rel)
+        raise
+    if not source.is_file():
+        raise RuntimeError("Original is missing after copy-sort - this must never happen")
+    copies = [str(house_dest)] + ([] if same_as_source else [str(set_dest)])
+    _final_cues = summarize_cues(house_dest, db)
+    _tm.mark("final_readback")
+    _tm.done()
+    return SortResult(
+        source_path=str(source),
+        dest_path=str(house_dest),
+        stems_moved=stems,
+        database_updated=True,
+        database_backup=res.get("backup"),
+        cues=_final_cues,
+        dry_run=False,
+        library_mode="House+Sauna Fest",
+        library_dests=payload,
+        sets_cues_copied=0,
+        sets_paths=[] if same_as_source else [str(set_dest)],
+        copied=any_copied,
+        original_kept=True,
+        skipped_existing=any_skipped and not any_copied,
+        sha1=src_sha,
+        saved=True,
+        save_reason="clones verified in database.xml" if res.get("cloned") else "already registered - skipped",
+        new_folder_created=new_created,
+    )
+
+
+def sauna_fest_sort_track(
+    source_path: str | Path,
+    *,
+    relative_folder: str = "",
+    destinations: list[dict[str, str]] | None = None,
+    database_path: Path | None = None,
+    dry_run: bool = False,
+    set_folder_name: str | None = None,
+) -> SortResult:
+    db = Path(database_path) if database_path else VDJ_DATABASE
+    source = Path(source_path).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Source file not found: {source}")
+    if source.suffix.lower() not in AUDIO_EXTENSIONS:
+        raise ValueError(f"Not an audio file: {source.name}")
+    ok_roots = (READY_FOR_SORT.resolve(), ADD_CUES.resolve(), SETS_ROOT.resolve())
+    if not any(_is_under(source, r) for r in ok_roots):
+        raise ValueError(f"Source must live under Add Cues, Ready for Sort, or Sets, got {source}")
+    return _sauna_fest_copy_sort(
+        source,
+        db=db,
+        relative_folder=relative_folder,
+        destinations=destinations,
+        dry_run=dry_run,
+        set_folder_name=set_folder_name,
+    )
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def sort_track(
@@ -802,7 +1203,12 @@ def sort_track(
     db = Path(database_path) if database_path else VDJ_DATABASE
     source = Path(source_path).expanduser().resolve()
     ready = (ready_root or READY_FOR_SORT).resolve()
-    library_mode = (library_name or "").strip() or "Both"
+    library_mode = (library_name or "").strip() or ("House" if _profile.IS_HOUSE else "Both")
+    if _profile.IS_HOUSE:
+        # The destination library (House, a cued destination) IS the cued archive — no second Cues Sorted copy,
+        # no lane color painting.
+        also_cues_sorted = False
+        lane = None
 
     if not source.is_file():
         raise FileNotFoundError(f"Source file not found: {source}")
@@ -825,11 +1231,20 @@ def sort_track(
         raise ValueError(
             f"Source must live under Add Cues, Ready for Sort, or Sets, got {source}"
         )
+    if _profile.IS_HOUSE:
+        return _house_copy_sort(
+            source,
+            db=db,
+            relative_folder=relative_folder,
+            destinations=destinations,
+            dry_run=dry_run,
+        )
     keep_source = source_kind == "sets"
 
     # Create missing folders when multi-targeting or Both (House may lack Zouk nests).
     create_missing = (
-        bool(destinations and len(destinations) > 1)
+        not _profile.IS_HOUSE
+        and bool(destinations and len(destinations) > 1)
         or library_mode.lower() == "both"
         or (bool(destinations) and len({d.get("library") for d in destinations}) > 1)
     )
@@ -1116,10 +1531,18 @@ def _drop_path(path: Path, *, to_trash: bool) -> dict[str, Any]:
     return {"unlink_only": False, "kept_hardlinks": 0, "to_trash": to_trash}
 
 
+def _cued_destination_roots() -> list[Path]:
+    """Cues Sorted + (House fork) the House library: sorted/cued destinations."""
+    roots = [CUES_SORTED]
+    if _profile.IS_HOUSE:
+        roots.extend(p for p in CUED_DESTINATION_ROOTS if p not in roots)
+    return roots
+
+
 def _allowed_placement_roots() -> list[Path]:
     """House / Zouk / Cues Sorted / Sets (not Ready / Add Cues)."""
     roots = [p.resolve() for p in LIBRARIES.values()]
-    roots.append(CUES_SORTED.resolve())
+    roots.extend(p.resolve() for p in _cued_destination_roots())
     try:
         roots.append(SETS_ROOT.resolve())
     except OSError:
@@ -1170,7 +1593,7 @@ def _assert_under_queue_roots(path: Path) -> Path:
     roots = [
         READY_FOR_SORT.resolve(),
         ADD_CUES.resolve(),
-        CUES_SORTED.resolve(),
+        *[p.resolve() for p in _cued_destination_roots()],
         SETS_ROOT.resolve(),
         *[p.resolve() for p in LIBRARIES.values()],
     ]
@@ -1498,10 +1921,13 @@ def _fill_display_fields_from_source(
     """
     from song_lane_color import classify_path, color_for_lane, current_user_color
 
+    from .lanes import lane_from_user_color
+
     dest_user2 = normalize_user2_dest(_user2_from_song_xml(dest_xml))
     src_user2 = normalize_user2_dest(_user2_from_song_xml(source_xml))
     if not src_user2:
-        src_user2 = normalize_user2_dest(directory_sort_label(str(source_path)))
+        origin = _origin_path_for_directory_sort(source_path)
+        src_user2 = normalize_user2_dest(directory_sort_label(str(origin)))
     user2 = dest_user2 or src_user2 or None
 
     dest_color = current_user_color(dest_xml)
@@ -1509,7 +1935,7 @@ def _fill_display_fields_from_source(
     if not src_color:
         lane = classify_path(str(source_path))
         src_color = color_for_lane(lane) if lane else None
-    color = dest_color or src_color or None
+    color = dest_color if lane_from_user_color(dest_color) else (src_color or None)
 
     if user2 is None and color is None:
         return dest_xml
@@ -1557,9 +1983,146 @@ def copy_display_fields_to_placement(
     if create_backup:
         backup = backup_database(db)
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, dest_key, new_dest, validate=False)
+        safe_rewrite_song(
+            db, dest_key, new_dest,
+            base_song=content[dest_start:dest_end], validate=False,
+        )
     payload["updated"] = True
     payload["database_backup"] = backup
+    return payload
+
+
+def _is_library_crate_path(path: Path) -> bool:
+    """True for files under House/, Zouk/, or Cues Sorted/ — not Ready/Add Cues."""
+    audio = path.expanduser().resolve()
+    roots = [Path(value).expanduser().resolve() for value in LIBRARIES.values() if value]
+    roots.extend(p.expanduser().resolve() for p in _cued_destination_roots())
+    for root in roots:
+        try:
+            rel = audio.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts:
+            return True
+    return False
+
+
+def _origin_path_for_directory_sort(source: Path) -> Path:
+    """Prefer a Zouk/House/Cues Sorted folder so Sets copies get a visible User2."""
+    if _is_library_crate_path(source) and normalize_user2_dest(
+        directory_sort_label(str(source))
+    ):
+        return source
+    for hit in find_library_matches(source.name):
+        path = Path(str(hit.get("path") or ""))
+        if not path.is_file():
+            continue
+        if _is_library_crate_path(path) and normalize_user2_dest(
+            directory_sort_label(str(path))
+        ):
+            return path
+    for hit in find_cues_sorted_matches(source.name):
+        path = Path(str(hit.get("path") or ""))
+        if (
+            path.is_file()
+            and _is_library_crate_path(path)
+            and normalize_user2_dest(directory_sort_label(str(path)))
+        ):
+            return path
+    return source
+
+
+def _cloned_song_xml_for_dest(source_xml: str, source: Path, dest: Path) -> str:
+    origin = _origin_path_for_directory_sort(source)
+    return song_xml_with_new_filepath(
+        source_xml,
+        normalize_database_path(str(dest)),
+        directory_sort_path=str(origin),
+    )
+
+
+def clone_source_song_onto_dest(
+    source_path: str | Path,
+    dest_path: str | Path,
+    *,
+    database_path: Path | None = None,
+    dry_run: bool = False,
+    allow_vdj_running: bool = False,
+    create_backup: bool = True,
+    overwrite: bool = True,
+) -> dict[str, Any]:
+    """
+    Clone the source VirtualDJ Song onto a Sets copy.
+
+    Copies cues, cue colors, beatgrid, Infos UserColor, and Directory Sort
+    (Tags User2 from the Zouk/House origin — not the event folder name).
+    Replaces a thin VDJ-scanned dest entry.
+    """
+    source = _assert_under_queue_roots(Path(source_path))
+    dest = _assert_under_copy_cue_dests(Path(dest_path))
+    if source.resolve() == dest.resolve():
+        raise ValueError("Source and destination are the same file")
+    if not is_pajamathon_set_audio(dest, sets_root=SETS_ROOT):
+        raise ValueError(
+            "clone_source_song_onto_dest only writes Sets/Pajamathon copies, "
+            f"got {dest}"
+        )
+    db = Path(database_path) if database_path else VDJ_DATABASE
+    if not source.is_file():
+        raise FileNotFoundError(f"Source file not found: {source}")
+    if not dest.is_file():
+        raise FileNotFoundError(f"Placement file not found: {dest}")
+    if is_virtualdj_running() and not dry_run and not allow_vdj_running:
+        raise RuntimeError(
+            "VirtualDJ is running. Close it before cloning cues / Directory Sort "
+            "onto a set copy."
+        )
+    source_cues = summarize_cues(source, db)
+    if not source_cues.in_database:
+        raise ValueError(f"Source track is not in the VirtualDJ database: {source}")
+    dest_cues = summarize_cues(dest, db)
+    dest_has_markers = dest_cues.cue_count > 0 or dest_cues.loop_count > 0
+    if dest_has_markers and not overwrite:
+        raise ValueError(
+            f"Destination already has {dest_cues.cue_count} cue(s)"
+            + (f" and {dest_cues.loop_count} loop(s)" if dest_cues.loop_count else "")
+            + ". Pass overwrite=true to replace them."
+        )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "dry_run": dry_run,
+        "mode": "cloned",
+        "source_path": str(source),
+        "dest_path": str(dest),
+        "copied_cues": source_cues.cue_count,
+        "copied_loops": source_cues.loop_count,
+        "overwrote": dest_has_markers,
+        "database_backup": None,
+    }
+    if dry_run:
+        return payload
+    backup = backup_database(db) if create_backup else None
+    payload["database_backup"] = backup
+    with vdj_db_write():
+        content = read_vdj_database_text(db)
+        _, src_start, src_end = _song_span_for_path(
+            content, source, source_path
+        )
+        cloned_xml = _cloned_song_xml_for_dest(
+            content[src_start:src_end], source, dest
+        )
+        try:
+            dest_key, _, _ = _song_span_for_path(content, dest, dest_path)
+        except KeyError:
+            dest_key = None
+        if dest_key:
+            safe_rewrite_song(db, dest_key, cloned_xml, validate=True)
+        else:
+            insert_song_xml_in_database(db, cloned_xml, validate=True)
+    after = summarize_cues(dest, db)
+    payload["dest_cues"] = after.to_dict()
+    payload["dest_is_cued"] = after.is_cued
+    payload["user_color"] = after.user_color
     return payload
 
 
@@ -1574,12 +2137,13 @@ def copy_cues_to_placement(
     create_backup: bool = True,
 ) -> dict[str, Any]:
     """
-    Copy VirtualDJ cue/loop markers from a Ready/Add Cues track onto an
-    existing House/Zouk/Cues Sorted file. Audio files are not moved.
+    Copy VirtualDJ cue/loop markers from a Ready/Add Cues/library track onto
+    an existing House/Zouk/Cues Sorted/Sets file. Audio files are not moved.
 
-    If the destination has no Song entry, clone the source Song under the
-    dest FilePath. If it already has a Song, replace only its manual cue/loop
-    POIs and keep dest Tags/Scan/beatgrid/Comment/FilePath.
+    Sets/Pajamathon dests get a full Song clone (cues, cue colors, beatgrid,
+    Infos UserColor, Directory Sort User2 from the Zouk/House origin).
+    Library dests: if missing from the database, clone the source Song; if
+    present, replace only manual cue/loop POIs and keep dest Tags/Scan.
     """
     source = _assert_under_queue_roots(Path(source_path))
     dest = _assert_under_copy_cue_dests(Path(dest_path))
@@ -1622,6 +2186,38 @@ def copy_cues_to_placement(
             + (f" and {dest_cues.loop_count} loop(s)" if dest_cues.loop_count else "")
             + ". Pass overwrite=true to replace them."
         )
+
+    if is_pajamathon_set_audio(dest, sets_root=SETS_ROOT):
+        cloned = clone_source_song_onto_dest(
+            source,
+            dest,
+            database_path=db,
+            dry_run=dry_run,
+            allow_vdj_running=allow_vdj_running,
+            create_backup=create_backup,
+            overwrite=overwrite,
+        )
+        root_name, relative_path = _placement_label(dest)
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "mode": cloned.get("mode") or "cloned",
+            "source_path": str(source),
+            "dest_path": str(dest),
+            "name": dest.name,
+            "root_name": root_name,
+            "relative_path": relative_path,
+            "copied_cues": int(cloned.get("copied_cues") or source_cues.cue_count),
+            "copied_loops": int(cloned.get("copied_loops") or source_cues.loop_count),
+            "overwrote": bool(cloned.get("overwrote")),
+            "dest_was_cued": dest_has_markers,
+            "dest_had_cues": dest_cues.cue_count,
+            "dest_had_loops": dest_cues.loop_count,
+            "dest_in_database": dest_cues.in_database,
+            "database_backup": cloned.get("database_backup"),
+            "dest_cues": cloned.get("dest_cues"),
+            "dest_is_cued": cloned.get("dest_is_cued"),
+        }
 
     root_name, relative_path = _placement_label(dest)
     mode = "injected" if dest_cues.in_database else "cloned"
@@ -1671,8 +2267,8 @@ def copy_cues_to_placement(
             new_dest_xml = _fill_display_fields_from_source(
                 new_dest_xml, source_xml, source
             )
-            rewrite_song_xml_in_database(
-                db, dest_key, new_dest_xml, validate=True
+            safe_rewrite_song(
+                db, dest_key, new_dest_xml, base_song=dest_xml, validate=True
             )
         else:
             clone_song_entry_to_path(
@@ -1969,9 +2565,11 @@ def add_track_to_event_set(
     create_backup: bool = True,
 ) -> dict[str, Any]:
     """
-    Copy a Ready/Add Cues track into Sets/Pajamathon (audio + stems + VDJ cues).
+    Copy a Ready/Add Cues/library track into Sets/Pajamathon.
 
-    Ready/Add Cues stays put. Used when a cued track is missing from the event crate.
+    Copies audio + stems and clones the VirtualDJ Song: cues, cue colors,
+    beatgrid, title UserColor, and Directory Sort (origin crate User2).
+    Source stays put.
     """
     source = _assert_under_queue_roots(Path(source_path))
     if not source.is_file():
@@ -1986,16 +2584,22 @@ def add_track_to_event_set(
         folder = root / event_folder_name(event_name)
     else:
         folder = pajamathon_event_folder(root)
+    folder = folder.expanduser().resolve()
+    try:
+        folder.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Event folder must stay under Sets/: {folder}") from exc
 
     for hit in find_set_matches(source.name, sets_root=root):
         event = str(hit.get("event") or hit.get("root_name") or "")
         if is_pajamathon_event(event) or folder.name.lower() in event.lower():
-            return {
+            dest_existing = Path(str(hit.get("path") or ""))
+            payload = {
                 "ok": True,
                 "already_exists": True,
                 "dry_run": dry_run,
                 "source_path": str(source),
-                "dest_path": str(hit.get("path") or ""),
+                "dest_path": str(dest_existing),
                 "event": event,
                 "relative_path": str(hit.get("relative_path") or ""),
                 "existing": hit,
@@ -2004,6 +2608,39 @@ def add_track_to_event_set(
                 "stems_copied": False,
                 "database_backup": None,
             }
+            source_cues = summarize_cues(source, database_path)
+            dest_cues = (
+                summarize_cues(dest_existing, database_path)
+                if dest_existing.is_file()
+                else None
+            )
+            needs_clone = bool(
+                source_cues.in_database
+                and dest_existing.is_file()
+                and dest_cues is not None
+                and (
+                    not dest_cues.has_beatgrid
+                    or dest_cues.cue_count < source_cues.cue_count
+                    or dest_cues.loop_count < source_cues.loop_count
+                    or not lane_from_user_color(dest_cues.user_color)
+                )
+            )
+            if dry_run or not needs_clone:
+                return payload
+            copied = clone_source_song_onto_dest(
+                source,
+                dest_existing,
+                database_path=database_path,
+                dry_run=False,
+                allow_vdj_running=allow_vdj_running,
+                create_backup=create_backup,
+                overwrite=True,
+            )
+            payload["database_backup"] = copied.get("database_backup")
+            payload["cue_mode"] = copied.get("mode")
+            payload["copied_cues"] = int(copied.get("copied_cues") or 0)
+            payload["copied_loops"] = int(copied.get("copied_loops") or 0)
+            return payload
 
     index = next_set_track_index(folder)
     dest = folder / f"{index:03d}. {_set_copy_basename(source)}"
@@ -2030,16 +2667,22 @@ def add_track_to_event_set(
         payload["copied_loops"] = source_cues.loop_count
         return payload
 
+    if is_virtualdj_running() and not allow_vdj_running:
+        raise RuntimeError(
+            "VirtualDJ is running. Close it before adding a track to the set "
+            "so cues, color, and Directory Sort actually land in VDJ."
+        )
+
     _copy_file_and_stems(source, dest)
-    if source_cues.cue_count > 0 or source_cues.loop_count > 0:
-        copied = copy_cues_to_placement(
+    if source_cues.in_database:
+        copied = clone_source_song_onto_dest(
             source,
             dest,
-            overwrite=False,
             database_path=database_path,
             dry_run=False,
             allow_vdj_running=allow_vdj_running,
             create_backup=create_backup,
+            overwrite=True,
         )
         payload["database_backup"] = copied.get("database_backup")
         payload["cue_mode"] = copied.get("mode")
@@ -2708,3 +3351,7 @@ def send_set_copy_to_add_cues(
     payload["name"] = source.name
     return payload
 
+
+
+# House fork: when MUSIC_SORTER_READONLY=1 every mutator here is forced to dry_run.
+_profile.wrap_module_mutators(globals(), __name__)

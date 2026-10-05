@@ -8,13 +8,47 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Libre+Bodoni:wght@700&family=Monoton&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260829-exclude-best" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261004-house-sauna-fest8" />
+    <script>
+      /* Robust static loading: if the stylesheet or a script fails to load (server busy/restarting), show a calm
+         banner and poll /api/ping with backoff, then reload (the app reopens the same song). Never a styleless page. */
+      (function () {
+        var tries = 0, banner = null, polling = false;
+        function show(msg) {
+          if (!banner) {
+            banner = document.createElement("div");
+            banner.id = "serverBanner";
+            banner.setAttribute("role", "status");
+            banner.style.cssText = "position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:2147483647;background:#1b3a5c;color:#fff;border:1px solid #6aa7e8;border-radius:8px;padding:8px 14px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 2px 12px #0008";
+            (document.body || document.documentElement).appendChild(banner);
+          }
+          banner.textContent = msg;
+        }
+        function poll() {
+          if (polling) return;
+          polling = true;
+          (function once() {
+            tries += 1;
+            var wait = Math.min(15000, 1000 * Math.pow(1.6, tries));
+            show("Server unreachable - retrying" + (tries > 1 ? " (attempt " + tries + ")" : "") + "... your edits are kept.");
+            fetch("/api/ping", { cache: "no-store" }).then(function (r) {
+              if (r.ok) { show("Server is back - reloading..."); location.reload(); } else { setTimeout(once, wait); }
+            }).catch(function () { setTimeout(once, wait); });
+          })();
+        }
+        window.addEventListener("error", function (e) {
+          var el = e && e.target;
+          if (el && (el.tagName === "LINK" || el.tagName === "SCRIPT") && (el.href || el.src || "").indexOf("/static/") >= 0) poll();
+        }, true);
+        window.__msStaticRetry = poll;
+      })();
+    </script>
   </head>
-  <body class="mode-review">
+  <body data-profile="house" class="mode-review">
     <!--
       THESIS: A night-pool hi-fi cassette deck, not a dark SaaS console. The waveform lives in the cassette window.
       OWN-WORLD: walnut cheeks, brushed black faceplate, amber VFD, pool-teal water, peach dusk, VHS timestamp. Ghost modes; struck amber is the live key.
-      STORY: Cue, confirm a lane, file the track. VirtualDJ-safe.
+      STORY: Cue, pick a House folder, copy the track (original stays). VirtualDJ-safe.
       FIRST VIEWPORT: Walnut rails, faceplate top bar, crate left, cassette-window waveform center, destination rail right.
       FORM: User-pinned 80s tape deck × pool × chic VHS. Seed 54cefd6c. Raises: cathode struck-glow (selection), cutting-bench flag (now playing).
       FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
@@ -50,6 +84,10 @@
           <span class="mode-step">☰</span>
           <span class="mode-label">Assemble</span>
         </button>
+        <button type="button" data-mode="stems" aria-pressed="false">
+          <span class="mode-step">♫</span>
+          <span class="mode-label">Stems</span>
+        </button>
       </nav>
       <span id="autocueJobChip" class="autocue-job-chip" hidden title="AutoCue jobs"></span>
       <button type="button" id="quietSessionChip" class="quiet-session-chip" hidden title="This tab stays silent so checks do not play songs. Click to turn sound back on.">
@@ -78,6 +116,8 @@
           <span>Log</span>
         </button>
         <span id="countsBadge" class="badge neutral">—</span>
+        <span id="readonlyBadge" class="badge warn readonly-badge" role="status" hidden>Read-only (VDJ open)</span>
+        <span id="modelBadge" class="badge neutral" title="Gemini model" hidden></span>
         <span id="vdjBadge" class="badge neutral">VDJ</span>
       </div>
     </header>
@@ -85,7 +125,7 @@
     <div class="pipeline-strip" id="pipelineStrip" aria-live="polite">
       <div class="pipeline-copy">
         <span class="pipeline-kicker" id="pipelineKicker">Add Cues</span>
-        <strong id="pipelineTitle">Listen, then confirm a lane</strong>
+        <strong id="pipelineTitle">Listen, then pick a House folder</strong>
         <span class="subtitle" id="pipelineHint">Primary action is on the right. Approve only when cues feel right.</span>
       </div>
       <p class="pipeline-next pipeline-next-text" id="pipelineNext">
@@ -118,7 +158,7 @@
           <div>
             <div class="zone-kicker">Queue</div>
             <h1 id="listTitle">Add Cues</h1>
-            <div class="subtitle" id="listSubtitle">Cue, confirm a lane, then sort</div>
+            <div class="subtitle" id="listSubtitle">Cue, pick a House folder, then copy</div>
           </div>
         </div>
         <div class="toolbar" id="listToolbar" hidden>
@@ -132,7 +172,11 @@
             <button type="button" data-set-approval="not_approved">Not approved</button>
             <button type="button" data-set-approval="needs_sort" title="Cued VDJ-white, no lane yet">Needs sort</button>
           </div>
-          <div class="seg" id="crateFilter" role="tablist" aria-label="Add Cues crate">
+          <div class="house-crate" id="houseCrateWrap">
+            <label for="houseCrateSelect">Add Cues folder</label>
+            <select id="houseCrateSelect" aria-label="Add Cues folder (crate)"></select>
+          </div>
+          <div class="seg" id="crateFilter" role="tablist" aria-label="Add Cues crate" hidden>
             <button type="button" class="active" data-crate="all">All</button>
             <button type="button" data-crate="pajamathon">Pajamathon</button>
             <button type="button" data-crate="inbox">Inbox</button>
@@ -157,6 +201,26 @@
             Batch add cues
           </button>
         </div>
+        <div class="house-tools" id="houseTools" role="group" aria-label="BPM filter and sort" hidden>
+          <div class="house-tools-row">
+            <label for="bpmMinInput">BPM min</label>
+            <input type="number" id="bpmMinInput" class="bpm-input" min="40" max="220" step="1" inputmode="numeric" placeholder="min" />
+            <label for="bpmMaxInput">BPM max</label>
+            <input type="number" id="bpmMaxInput" class="bpm-input" min="40" max="220" step="1" inputmode="numeric" placeholder="max" />
+            <button type="button" class="chip" id="bpmChip115125" aria-pressed="false" title="Organic house window: 115 to 125 BPM">115–125</button>
+            <button type="button" class="btn ghost" id="bpmClearBtn" aria-label="Clear BPM filter">Clear</button>
+          </div>
+          <div class="house-tools-row">
+            <label for="houseSortKey">Sort by</label>
+            <select id="houseSortKey" aria-label="Sort tracks by">
+              <option value="default">Readiness</option>
+              <option value="bpm">BPM</option>
+              <option value="camelot">Key (Camelot 1A–12B)</option>
+            </select>
+            <button type="button" class="btn ghost" id="houseSortDir" aria-label="Sort direction: ascending" aria-pressed="false" title="Toggle ascending / descending">↑ Asc</button>
+            <span class="subtitle" id="houseToolsSummary" aria-live="polite"></span>
+          </div>
+        </div>
         <div class="track-search-wrap">
           <input type="search" id="trackSearch" class="track-search" placeholder="Search tracks…" autocomplete="off" spellcheck="false" />
         </div>
@@ -177,7 +241,8 @@
           </div>
 
           <div class="track-identity hero-identity">
-            <div class="track-art" aria-hidden="true">
+            <div class="track-art" id="trackArt" aria-hidden="true">
+              <img class="track-art-img" id="trackArtImg" alt="" hidden decoding="async" />
               <svg viewBox="0 0 32 32">
                 <path d="M16 30v-14"/>
                 <path d="M16 16c-6-2-10-7-9-13 1 5 4 9 9 11-1-6 3-10 8-12-2 5 0 9 1 12 4-5 10-6 14-4-5 1-9 4-10 8-4-4-9-5-13-2 3 2 6 4 7 8z"/>
@@ -240,7 +305,7 @@
           <div class="speed-panel" id="speedPanel">
             <div class="speed-row">
               <strong class="speed-kicker">Playback speed</strong>
-              <button type="button" class="btn primary" id="zoukSpeedBtn" title="Slow to the target BPM zouk feel">Zouk speed</button>
+              <button type="button" class="btn primary" id="zoukSpeedBtn" hidden aria-hidden="true" tabindex="-1">Speed</button>
               <button type="button" class="btn ghost" id="normalSpeedBtn">1× normal</button>
               <button type="button" class="btn ghost" id="halfBpmBtn" title="VDJ often double-times (e.g. 140 instead of 70). Halve the source BPM for speed math. Shortcut: H">½ BPM</button>
               <span class="badge neutral" id="bpmBadge">BPM —</span>
@@ -297,7 +362,9 @@
                     <span class="wave-tool-kicker">Place</span>
                     <div class="seg">
                       <button type="button" class="btn ghost" id="placeCueBtn" title="Place a cue on the 1. Click the wave, or Alt+click. Shift = free. Shortcut: C" aria-pressed="false">Cue</button>
-                      <button type="button" class="btn ghost" id="placeLoopBtn" title="Place an 8-beat loop on the 1. Click the wave. Shift = free. Shortcut: O" aria-pressed="false">Loop</button>
+                      <button type="button" class="btn ghost" id="placeLoopBtn" title="Place an 8-beat loop on the phrase [1] (16 beats). Click the wave. Shift or Alt = free (no snap). Shortcut: O" aria-pressed="false">Loop</button>
+                      <button type="button" class="btn ghost" id="undoEditBtn" title="Undo the last marker edit on this song. Shortcut: Ctrl/Cmd+Z" disabled>↶ Undo</button>
+                      <button type="button" class="btn ghost" id="redoEditBtn" title="Redo. Shortcut: Shift+Ctrl/Cmd+Z" disabled>↷ Redo</button>
                     </div>
                   </div>
                   <div class="wave-tool-group" role="group" aria-label="Listen">
@@ -347,6 +414,10 @@
                 <strong>Place loop</strong>
                 <span class="subtitle">Click the wave to drop an 8-beat loop on the 1 · Shift+click free · Esc cancel · half/double after</span>
               </div>
+              <div class="place-loop-fields" id="placeLoopFields">
+                <input type="text" id="placeLoopName" class="place-loop-name" maxlength="60" placeholder="Name this loop (optional)" aria-label="Name for the next loop" autocomplete="off" />
+                <div class="place-loop-swatches" id="placeLoopSwatches" role="radiogroup" aria-label="Color for the next loop"></div>
+              </div>
               <button type="button" class="btn ghost" id="placeLoopDoneBtn">Done</button>
             </div>
             <div class="waveform-wrap waveform-hero cassette-well" id="waveformWrap">
@@ -359,13 +430,7 @@
               <div class="cue-timeline-track"></div>
               <div class="cue-timeline-playhead" id="cuePlayhead"></div>
             </div>
-            <div class="cue-color-legend" id="cueColorLegend" aria-label="Cue color meanings">
-              <span class="cue-legend-swatch color-blue">Blue · Melodic</span>
-              <span class="cue-legend-swatch color-green">Green · Melodic + drums</span>
-              <span class="cue-legend-swatch color-purple">Purple · Drums</span>
-              <span class="cue-legend-swatch color-yellow">Yellow · Drums + vocals</span>
-              <span class="cue-legend-swatch color-orange">Orange · Vocals with no drums</span>
-            </div>
+            <div class="cue-color-legend" id="cueColorLegend" aria-label="Cue color meanings"></div>
             <div class="cue-list-toolbar">
               <div class="seg" id="cueKindFilter" role="tablist" aria-label="Show cues or loops">
                 <button type="button" class="active" data-cue-filter="all" role="tab" aria-selected="true">Both</button>
@@ -396,7 +461,7 @@
               <button type="button" class="btn ghost" id="skipBtn">Skip track</button>
             </div>
             <!-- Hidden twin for keyboard shortcut A — visible primary is approveBtnSide -->
-            <button type="button" class="visually-hidden" id="approveBtn" tabindex="-1" aria-hidden="true">Confirm a lane →</button>
+            <button type="button" class="visually-hidden" id="approveBtn" tabindex="-1" aria-hidden="true">Pick a House folder →</button>
           </div>
 
           <div class="shortcuts-hint" id="shortcutsHint">
@@ -501,7 +566,7 @@
         <div class="panel assemble-panel zone-rail" id="assemblePanel" hidden aria-label="Playlist assembly">
           <div class="panel-header recs-header">
             <div>
-              <div class="zone-kicker">Zouk crate</div>
+              <div class="zone-kicker">House crate</div>
               <h2>Playlist assembly</h2>
               <div class="subtitle">Gemini hears a ~28s clip + a public web blurb · newest first · 300–500</div>
             </div>
@@ -531,7 +596,7 @@
               </label>
               <label class="assemble-check">
                 <input id="assembleScanAll" type="checkbox" />
-                <span>Scan entire Zouk library (otherwise stop once the crate is full)</span>
+                <span>Scan the whole library (otherwise stop once the crate is full)</span>
               </label>
             </div>
           </div>
@@ -569,8 +634,8 @@
                 <span class="assemble-mix-actual" data-lane="rnb">—</span>
               </label>
               <label class="assemble-mix-lane">
-                <span class="assemble-mix-name">Kizouk</span>
-                <input type="number" class="assemble-mix-pct" min="0" max="100" step="1" value="10" data-lane="kizouk" aria-label="Kizouk target percent" />
+                <span class="assemble-mix-name">Lane A</span>
+                <input type="number" class="assemble-mix-pct" min="0" max="100" step="1" value="10" data-lane="kizouk" aria-label="Lane A target percent" />
                 <span class="subtitle">%</span>
                 <span class="assemble-mix-actual" data-lane="kizouk">—</span>
               </label>
@@ -635,8 +700,8 @@
                 <span class="assemble-mix-actual" data-lane="classics">—</span>
               </label>
               <label class="assemble-mix-lane">
-                <span class="assemble-mix-name">Neo Zouk</span>
-                <input type="number" class="assemble-mix-pct" min="0" max="100" step="1" value="0" data-lane="neo_zouk" aria-label="Neo Zouk target percent" />
+                <span class="assemble-mix-name">Lane B</span>
+                <input type="number" class="assemble-mix-pct" min="0" max="100" step="1" value="0" data-lane="neo_zouk" aria-label="Lane B target percent" />
                 <span class="subtitle">%</span>
                 <span class="assemble-mix-actual" data-lane="neo_zouk">—</span>
               </label>
@@ -716,6 +781,45 @@
           <p class="hint" id="assembleFiles" hidden></p>
         </div>
 
+        <div class="panel stems-panel zone-rail" id="stemsPanel" hidden aria-label="Stem vocal analysis">
+          <div class="panel-header recs-header">
+            <div>
+              <div class="zone-kicker">VirtualDJ stems</div>
+              <h2>Stem vocal check</h2>
+              <div class="subtitle">Finds vocal-layer holes — ~10s digital-mute tiles while the mix is still loud. The full mix can still sound fine on speakers.</div>
+            </div>
+            <div class="actions recs-header-actions">
+              <button type="button" class="btn ghost" id="stemsCancelBtn" hidden>Cancel</button>
+              <button type="button" class="btn ghost" id="stemsScanCuedBtn">Scan new cued</button>
+              <button type="button" class="btn primary btn-cta" id="stemsScanAllBtn">Scan new</button>
+            </div>
+          </div>
+          <p class="hint" id="stemsInventoryHint">Looking up .vdjstems sidecars…</p>
+          <div class="stems-stats" id="stemsStats"></div>
+          <div class="stems-progress" id="stemsProgress" hidden>
+            <div class="stems-progress-meta">
+              <span id="stemsProgressLabel">—</span>
+              <span id="stemsProgressCount">0/0</span>
+            </div>
+            <div class="stems-progress-bar" aria-hidden="true">
+              <div id="stemsProgressFill"></div>
+            </div>
+          </div>
+          <div class="stems-check-row">
+            <label class="stems-check-field">
+              <span>Check one file</span>
+              <input id="stemsCheckPath" type="text" placeholder="Path to audio or .vdjstems" spellcheck="false" />
+            </label>
+            <button type="button" class="btn" id="stemsCheckBtn">Check path</button>
+          </div>
+          <div class="stems-table-head">
+            <strong>Flagged files</strong>
+            <button type="button" class="btn danger" id="stemsDeleteBtn" disabled>Delete selected sidecars</button>
+          </div>
+          <div id="stemsBrokenTable" class="stems-table"></div>
+          <p class="hint" id="stemsNote">Deleting only removes the .vdjstems sidecar, never the audio. VirtualDJ may recreate it on load if Save prepared stems is Automatic.</p>
+        </div>
+
         <div class="panel practice-panel zone-rail" id="practicePanel" hidden aria-label="Practice lab">
           <div class="practice-hero">
             <div class="practice-hero-copy">
@@ -762,7 +866,10 @@
               <h2>Transition keepers</h2>
               <div class="subtitle" id="bestSetSubtitle">Across all pj mixes · Gemini keepers + your 1–5 priority</div>
             </div>
-            <span class="badge neutral" id="practiceBestCount">0</span>
+            <div class="best-set-hero-actions">
+              <button type="button" class="btn ghost best-set-hide-played" id="bestSetHidePlayedBtn" aria-pressed="false" title="Hide transitions that use a song already played in the live set (Played folder + Friday/Saturday).">Hide played</button>
+              <span class="badge neutral" id="practiceBestCount">0</span>
+            </div>
           </div>
           <div class="best-set-now" id="bestSetNow">
             <div class="best-set-now-kicker">Playing</div>
@@ -780,7 +887,7 @@
               </button>
             </div>
           </div>
-          <div class="practice-best-hint">Save / overall ≥ 7 / prioritized. Real sets marked Exclude from Best stay off this list. Play stays on this page.</div>
+          <div class="practice-best-hint">Save / overall ≥ 7 / prioritized. Real sets marked Exclude from Best stay off this list. Hide played drops songs already used Friday or Saturday.</div>
           <div id="practiceBestList" class="practice-best-list"></div>
         </div>
 
@@ -806,7 +913,7 @@
             <button type="button" class="btn ghost full" id="setOverviewSendBackBtn" disabled>Send back</button>
             <p class="hint" id="setOverviewSendBackHint">Relocates this copy to Add Cues / Pajamathon for new cues. Library siblings stay.</p>
             <button type="button" class="btn danger full" id="setOverviewRemoveBtn" disabled>Remove</button>
-            <p class="hint" id="setOverviewRemoveHint">Deletes this Sets/Pajamathon copy only. Zouk / Cues Sorted / Add Cues stay.</p>
+            <p class="hint" id="setOverviewRemoveHint">Deletes this set copy only. Cues Sorted / Add Cues stay.</p>
           </div>
         </div>
         <div class="panel folders zone-rail" id="reviewPanel" aria-label="Cue review actions">
@@ -814,43 +921,43 @@
             <div>
               <div class="zone-kicker">Action</div>
               <h2>Cue review</h2>
-              <div class="subtitle">Cue, confirm a lane, then sort</div>
+              <div class="subtitle">Cue, pick a House folder, then copy</div>
             </div>
           </div>
           <div class="review-body">
             <div id="sharedSortRailHome">
             <div class="review-section review-section-primary rail-primary" id="sharedSortRail">
-              <div class="rail-step-label">Lane</div>
+              <div class="rail-step-label">House folder</div>
               <div id="recommendation" class="recommendation loading review-lane-rec" hidden>
-                Asking Gemini for a lane…
+                Asking Gemini for a House folder…
               </div>
-              <div class="lane-picker" id="lanePicker" role="group" aria-label="Song color lane"></div>
-              <p class="hint" id="laneHint">Gemini recs a color. Confirm it, then sort. White stays unsorteable.</p>
+              <div class="lane-picker" id="lanePicker" hidden></div>
+              <p class="hint" id="laneHint" hidden></p>
               <button type="button" class="btn primary full btn-cta" id="approveBtnSide" disabled>
-                Confirm a lane →
+                Pick a House folder →
               </button>
-              <p class="hint rail-primary-hint">Pick Gemini rec or a folder · Zouk leaf + Cues Sorted + color</p>
-              <details class="review-folder-pick" id="reviewFolderPick">
+              <label class="sauna-toggle" title="Also copy the track into Sets/Sauna Fest/&lt;same subfolder&gt; (same all-or-nothing write; the set copy keeps the House folder's User2)"><input type="checkbox" id="alsoSaunaChk" checked /> Also copy to Sets/Sauna Fest</label>
+              <p class="hint rail-primary-hint">Pick the Gemini rec or a House folder · Sort COPIES and keeps the original</p>
+              <details class="review-folder-pick" id="reviewFolderPick" open>
                 <summary class="tool-drawer-summary">
-                  <span>Or pick a folder</span>
+                  <span>Or pick a House folder</span>
                   <span class="subtitle">Manual · overrides Gemini dest</span>
                 </summary>
                 <div class="tool-drawer-body">
                   <div class="toolbar">
-                    <div class="seg" id="libraryPathSeg">
-                      <button type="button" data-library="House">House</button>
-                      <button type="button" data-library="Zouk">Zouk</button>
-                      <button type="button" class="active" data-library="Both">Both</button>
+                    <div class="seg" id="libraryPathSeg" hidden>
+                      <button type="button" class="active" data-library="House">House</button>
                     </div>
                     <input id="folderFilter" type="search" placeholder="Filter folders…" autocomplete="off" />
                   </div>
                   <div class="hint path-hint" id="pathHint">
-                    Both: one click → House + Zouk. Alt-click for one library only.
+                    Sort copies and keeps the original.
                   </div>
+                  <div id="houseColorLegend" class="house-color-legend" hidden></div>
                   <div id="selectedDestChips" class="dest-chips" hidden></div>
                   <p class="hint sticky-selected">Selected: <strong id="selectedFolder">None selected</strong></p>
                   <div id="folderTree" class="folder-tree"></div>
-                  <details class="tool-drawer create-folder-drawer">
+                  <details class="tool-drawer create-folder-drawer" hidden>
                     <summary class="tool-drawer-summary">
                       <span>New folder…</span>
                       <span class="subtitle" id="createParentHint">Top level of House</span>
@@ -891,10 +998,10 @@
             </div>
 
             <div class="review-section review-section-delete">
-              <button type="button" class="btn full danger" id="deleteAddCuesBtn" title="Trash this Add Cues file and remove its VirtualDJ entry">
+              <button type="button" class="btn full danger" id="deleteAddCuesBtn" title="Trash this Add Cues file and remove its VirtualDJ entry. The Pajamathon set copy stays.">
                 Delete from Add Cues
               </button>
-              <p class="hint">Audio + stems → Trash · this path’s VDJ cues go with it</p>
+              
             </div>
 
             <details class="review-section review-section-secondary tool-drawer">
@@ -910,7 +1017,7 @@
             </details>
 
             <div class="hint review-footnote">
-              Pipeline: Add Cues → confirm a lane → Zouk folder + Cues Sorted + color.
+              Pipeline: Add Cues → pick a House folder → COPY TO House (original stays).
             </div>
           </div>
         </div>
@@ -956,7 +1063,7 @@
           <div><dt><span class="kbd">L</span></dt><dd>Loop play audition</dd></div>
           <div><dt><span class="kbd">C</span></dt><dd>Place cue</dd></div>
           <div><dt><span class="kbd">O</span></dt><dd>Place loop</dd></div>
-          <div><dt><span class="kbd">Z</span></dt><dd>Zouk speed</dd></div>
+          
           <div><dt><span class="kbd">H</span></dt><dd>Half BPM</dd></div>
           <div><dt><span class="kbd">G</span></dt><dd>Show bar ones</dd></div>
           <div><dt><span class="kbd">A</span> / <span class="kbd">S</span></dt><dd>Approve / skip (Add Cues)</dd></div>
@@ -966,13 +1073,14 @@
       </div>
     </div>
 
-    <script src="/static/status_handoff.js?v=20260827-pool-day"></script>
-    <script src="/static/placements.js?v=20260827-pool-day"></script>
-    <script src="/static/state.js?v=20260827-pool-day"></script>
-    <script src="/static/transport.js?v=20260827-pool-day"></script>
-    <script src="/static/waveform.js?v=20260827-pool-day"></script>
-    <script src="/static/practice.js?v=20260827-pool-day"></script>
-    <script src="/static/assemble.js?v=20260827-pool-day"></script>
-    <script src="/static/app.js?v=20260829-recs-event-plays"></script>
+    <script src="/static/status_handoff.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/placements.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/state.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/transport.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/waveform.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/practice.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/assemble.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/stems.js?v=20261004-house-sauna-fest8"></script>
+    <script src="/static/app.js?v=20261004-house-sauna-fest8"></script>
   </body>
 </html>

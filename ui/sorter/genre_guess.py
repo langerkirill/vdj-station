@@ -26,10 +26,10 @@ CACHE_PATH = DJ_NOTES_ROOT / "genre_guesses.json"
 # Gemini Flash via sorter.llm (ignores leftover grok-* env).
 MODEL_FALLBACKS = [DEFAULT_MODEL]
 VALID_FAMILIES = {
-    "rnb_soul_zouk",
+    "house",
+    "vocal_soul",
     "hiphop",
-    "house_dance",
-    "psy_tribal_world",
+    "psy_world",
     "rock_indie",
     "other",
 }
@@ -41,10 +41,10 @@ _mem_cache_path: str | None = None
 
 class GenreGuessSchema(BaseModel):
     genre: str = Field(
-        description="Specific mixable genre, e.g. alternative R&B, organic tribal, deep house"
+        description="Specific mixable genre, e.g. organic house, melodic house, deep house, alternative R&B"
     )
     family: str = Field(
-        description="One of: rnb_soul_zouk, hiphop, house_dance, psy_tribal_world, rock_indie, other"
+        description="One of: house, vocal_soul, hiphop, psy_world, rock_indie, other"
     )
     confidence: float = Field(ge=0.0, le=1.0, default=0.7)
     reason: str = Field(default="", description="One short clause")
@@ -134,8 +134,9 @@ def _ask_gemini(
 ) -> dict[str, Any]:
     prompt = f"""You are helping a DJ classify one track for mix continuity.
 
-Guess the genre so we do not mix contemporary R&B / soul / urban kiz with
-tribal / psy / organic world (or house vs rock) just because BPM and key match.
+This is an organic house / melodic house / deep house library (about 120 BPM).
+Guess the genre so we do not mix contemporary R&B / soul / hip-hop or psytrance
+into house sets (or house vs rock) just because BPM and key match.
 
 Use artist + title + filename. Folder/tag hints may be inbox staging
 (Add Cues, Ready for Sort, AC Low Quality, Cues Sorted/Energy) and then
@@ -148,8 +149,8 @@ EXISTING TAG: {genre or "—"}
 FOLDER VIBE: {vibe or "—"}
 
 Return:
-- genre: a specific mixable label (e.g. alternative R&B, organic tribal, deep house)
-- family: exactly one of rnb_soul_zouk, hiphop, house_dance, psy_tribal_world, rock_indie, other
+- genre: a specific mixable label (e.g. organic house, melodic house, deep house, afro house, alternative R&B)
+- family: exactly one of house (organic / melodic / deep / progressive / afro / tech house, tribal-organic), vocal_soul (R&B / soul / vocal pop), hiphop, psy_world (psytrance / world / ambient), rock_indie, other
 - confidence: 0-1
 - reason: one short clause
 """

@@ -586,9 +586,14 @@ def _assert_allowed_path(path: Path) -> Path:
 
 
 STEMS_REQUIRED_MESSAGE = (
-    "Blocked: analyze stems in VirtualDJ first "
-    "(needs adjacent .vdjstems beside the audio)"
+    "Go make stems in VirtualDJ first: play the track with stems on "
+    "(or Analyze stems) until an adjacent .vdjstems file appears, then AutoCue again."
 )
+
+
+def stems_required_for_scope(scope: str) -> bool:
+    """Cues+loops and loops-only need VDJ stems. Cues-only can run on the mix."""
+    return normalize_write_scope(scope) != WRITE_SCOPE_CUES
 
 
 
@@ -656,7 +661,7 @@ def start_retry_cues(
     stems = adjacent_vdj_stems(audio)
     if isinstance(preflight, dict):
         preflight = {**preflight, "has_stems": stems is not None}
-    if require_stems and stems is None:
+    if require_stems and stems is None and stems_required_for_scope(scope):
         job = RetryJob(
             id=uuid.uuid4().hex[:12],
             path=str(audio),
@@ -1002,7 +1007,7 @@ def _run_job(job_id: str, dry_run: bool, model_name: Optional[str]) -> None:
             return
         audio_path = job.path
         scope = normalize_write_scope(getattr(job, "write_scope", WRITE_SCOPE_ALL))
-        if adjacent_vdj_stems(audio_path) is None:
+        if adjacent_vdj_stems(audio_path) is None and stems_required_for_scope(scope):
             _update_job(
                 job_id,
                 status="skipped",
@@ -1044,7 +1049,9 @@ def _run_job(job_id: str, dry_run: bool, model_name: Optional[str]) -> None:
                     write_scope=scope,
                     dry_run=dry_run,
                     model_name=model_name or getattr(job, "model_name", None),
-                    stems_skipped=bool(preflight.get("stems_skipped")),
+                    stems_skipped=bool(
+                        preflight.get("stems_skipped") or not has_stems
+                    ),
                     grid_confirmed=label.startswith("Grid manually confirmed"),
                 )
                 _update_job(

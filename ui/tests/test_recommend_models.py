@@ -47,14 +47,13 @@ class CapacityErrorTests(unittest.TestCase):
 
 class SorterModelTests(unittest.TestCase):
     def test_default_is_not_flash_lite(self):
-        self.assertEqual(PREFERRED_SORTER_MODEL, "gemini-3.7-flash")
+        self.assertEqual(PREFERRED_SORTER_MODEL, "gemini-3.8-flash")
         self.assertNotIn("lite", PREFERRED_SORTER_MODEL)
 
     def test_models_to_try_skips_dead_and_grok(self):
         names = models_to_try("gemini-3.5-flash-lite")
         self.assertEqual(names[0], "gemini-3.5-flash-lite")
-        self.assertIn("gemini-3.7-flash", names)
-        self.assertIn("gemini-2.5-pro", names)
+        self.assertEqual(names[1:], ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"])
         self.assertNotIn("gemini-2.5-flash", names)
         self.assertNotIn("gemini-2.0-flash", names)
         self.assertFalse(any(n.lower().startswith("grok") for n in names))
@@ -82,7 +81,7 @@ class AskJsonFallbackTests(unittest.TestCase):
         ]
         self.assertEqual(models[0], "gemini-3.5-flash-lite")
         self.assertEqual(models[1], "gemini-3.5-flash-lite")
-        self.assertEqual(models[2], "gemini-3.7-flash")
+        self.assertEqual(models[2], "gemini-3.8-flash")
 
 
 class RecommendFallbackTests(unittest.TestCase):
@@ -95,13 +94,13 @@ class RecommendFallbackTests(unittest.TestCase):
         ok = Mock()
         ok.text = json.dumps(
             {
-                "zouk": {
-                    "relative_path": "Chill",
+                "house": {
+                    "relative_path": "Amped",
                     "confidence": 0.8,
-                    "reasoning": "soft and spacious",
-                    "alternatives": ["Lounge"],
+                    "reasoning": "rolling and sunny",
+                    "alternatives": ["Bassy"],
                 },
-                "vibe_tags": ["chill"],
+                "vibe_tags": ["warm"],
             }
         )
         client = Mock()
@@ -114,24 +113,24 @@ class RecommendFallbackTests(unittest.TestCase):
             audio.write_bytes(b"fake-audio")
             rec = FolderRecommender(api_key="test-key", model_name="gemini-3.5-flash-lite")
             rec.client = client
-            rec._catalog_cache = {"Zouk": ["Chill", "Lounge"], "House": ["Party"]}
-            rec._catalog_mtime = 1.0
-
-            with patch.object(rec, "_track_bpm", return_value=90.0), patch(
+            with patch.object(rec, "_track_bpm", return_value=120.0), patch(
                 "vdj_cuer.gemini_call.time.sleep"
+            ), patch(
+                "sorter.house_folders.list_existing_folders", return_value=["Amped", "Bassy"]
             ):
                 result = rec.recommend(audio)
 
         self.assertIsNone(result.error)
-        self.assertEqual(result.zouk["relative_path"], "Chill")
-        self.assertEqual(result.model, "gemini-3.7-flash")
+        self.assertEqual(result.house["relative_path"], "Amped")
+        self.assertEqual(result.relative_path, "Amped")
+        self.assertEqual(result.model, "gemini-3.8-flash")
         models = [
             call.kwargs["model"]
             for call in client.models.generate_content.call_args_list
         ]
         self.assertEqual(models[0], "gemini-3.5-flash-lite")
         self.assertEqual(models[1], "gemini-3.5-flash-lite")
-        self.assertEqual(models[2], "gemini-3.7-flash")
+        self.assertEqual(models[2], "gemini-3.8-flash")
 
 
 if __name__ == "__main__":

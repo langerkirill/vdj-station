@@ -14,12 +14,13 @@ from .config import (
     ADD_CUES_SKIP_DIR_NAMES,
     AUDIO_EXTENSIONS,
     CUES_SORTED,
+    HOUSE_ROOT,
     LIBRARIES,
     LIBRARY_SKIP_DIR_NAMES,
     READY_FOR_SORT,
     SETS_ROOT,
-    ZOUK_VIBE_FOLDERS,
 )
+from . import profile as _profile
 
 # Set crate indexes: "407. Title"
 _SET_INDEX_PREFIX_RE = re.compile(r"^\d{1,4}\.\s+")
@@ -40,6 +41,18 @@ _PLACEMENT_INDEX_CACHE: dict[str, Any] = {
 }
 
 
+def cued_destination_roots() -> list[Path]:
+    """Roots whose audio counts as SORTED + CUED (placement index, status, exclusion).
+
+    Cues Sorted always. In the House fork the existing House library
+    (``/Music/DJ/Music/House``, the House library) is a cued destination too.
+    """
+    roots: list[Path] = [CUES_SORTED]
+    if _profile.IS_HOUSE and HOUSE_ROOT not in roots:
+        roots.append(HOUSE_ROOT)
+    return roots
+
+
 def invalidate_placement_indexes() -> None:
     """Drop the House/Zouk/Sets basename cache after files move or vanish."""
     _PLACEMENT_INDEX_CACHE["at"] = 0.0
@@ -55,7 +68,11 @@ def cached_placement_indexes() -> tuple[
     cached = _PLACEMENT_INDEX_CACHE
     if cached["placement"] is not None and now - float(cached["at"]) < 120:
         return cached["placement"], cached["sets"]
-    placement = build_audio_basename_index([*LIBRARIES.values(), CUES_SORTED])
+    roots: list[Path] = []
+    for root in [*LIBRARIES.values(), *cued_destination_roots()]:
+        if root not in roots:
+            roots.append(root)
+    placement = build_audio_basename_index(roots)
     sets = build_set_match_index(SETS_ROOT)
     cached["at"] = now
     cached["placement"] = placement
@@ -390,10 +407,13 @@ def find_cues_sorted_matches(
     lookup = (
         index
         if index is not None
-        else build_audio_basename_index([CUES_SORTED])
+        else build_audio_basename_index(cued_destination_roots())
     )
     return find_matches_from_index(
-        filename, lookup, root_names={CUES_SORTED.name}, fuzzy=True
+        filename,
+        lookup,
+        root_names={r.name for r in cued_destination_roots()},
+        fuzzy=True,
     )
 
 
@@ -653,9 +673,7 @@ def _build_folder_tree(
             max_depth=max_depth,
             library_name=library_name,
         )
-        if depth == 0 and library_name == "Zouk":
-            group = "vibe" if child.name in ZOUK_VIBE_FOLDERS else "artist"
-        elif depth == 0:
+        if depth == 0:
             group = "vibe"
         else:
             group = "nested"
@@ -674,11 +692,13 @@ def _build_folder_tree(
 
 
 def expand_library_mode(library_mode: str) -> list[str]:
-    """Map UI sort path (House / Zouk / Both) to concrete library names."""
+    """Map UI sort path to concrete library names (House fork: only "House")."""
     mode = (library_mode or "").strip()
     key = mode.lower()
     if key == "both":
-        return ["House", "Zouk"]
+        if len(LIBRARIES) == 1:
+            raise KeyError("Unknown library mode: Both (House build has a single library)")
+        return list(LIBRARIES)
     if mode in LIBRARIES:
         return [mode]
     # Accept case-insensitive single library.
@@ -727,11 +747,16 @@ def list_library_tree(
         max_depth=max_depth,
         library_name=library_name,
     )
-    return {
+    payload = {
         "library": library_name,
         "root": str(root),
         "folders": [node.to_dict() for node in tree],
     }
+    if _profile.IS_HOUSE:
+        from . import house_folders
+
+        payload["new_folders"] = house_folders.new_folder_state()
+    return payload
 
 
 def list_libraries() -> list[dict[str, Any]]:
@@ -744,13 +769,14 @@ def list_libraries() -> list[dict[str, Any]]:
                 "exists": path.is_dir(),
             }
         )
-    result.append(
-        {
-            "name": "Both",
-            "path": None,
-            "exists": all(p.is_dir() for p in LIBRARIES.values()),
-        }
-    )
+    if len(LIBRARIES) > 1:
+        result.append(
+            {
+                "name": "Both",
+                "path": None,
+                "exists": all(p.is_dir() for p in LIBRARIES.values()),
+            }
+        )
     return result
 
 
@@ -785,6 +811,13 @@ def resolve_destination(
     rel = relative_path.strip().strip("/")
     if not rel:
         raise ValueError("Destination folder path is required")
+    if _profile.IS_HOUSE:
+        # Already validated upstream (existing subfolder or validated new folder);
+        # here only refuse anything that could leave the House root.
+        parts = [p for p in rel.replace("\\", "/").split("/") if p]
+        if not parts or any(p in {".", ".."} for p in parts):
+            raise ValueError("Invalid House destination")
+        rel = "/".join(parts)
     dest = (root / rel).resolve()
     try:
         dest.relative_to(root)
@@ -811,6 +844,10 @@ def create_folder(
       create_folder("Zouk", name="Amber", parent_relative_path="Chill")
       create_folder("Both", name="Pulse", parent_relative_path="Energy")
     """
+    if _profile.IS_HOUSE:
+        raise ValueError(
+            "Use 'New folder in House' in the sort picker (max 3 without asking Kirill)."
+        )
     folder_name = _validate_folder_name(name)
     libraries = expand_library_mode(library_name)
     created: list[dict[str, str]] = []

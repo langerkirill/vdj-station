@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .bpm_edit import halve_track_bpm
+from . import profile as _profile
 from .config import ADD_CUES, CUES_ROOT, LIBRARIES, assert_existing_audio
 from .grid_edit import set_beatgrid_anchor
 from .relocate import is_virtualdj_running, summarize_cues, summarize_cues_for_paths
@@ -28,6 +29,10 @@ from vdj_cuer.common import existing_downbeat_is_trusted  # noqa: E402
 
 
 NEVER_HALVE_BELOW = 110.0
+# House fork: organic house lives at ~115–125 (and club house up to ~130). Never
+# halve a tempo reading anywhere in 100–135: that would mangle a correct grid.
+HOUSE_NEVER_HALVE_MIN = 100.0
+HOUSE_NEVER_HALVE_MAX = 135.0
 # 143.999 (Dusk/Dawn) is VDJ double-time for ~72.
 ALWAYS_HALVE_LOW = 138.0
 ALWAYS_HALVE_HIGH = 168.0
@@ -168,6 +173,12 @@ def decide_halve(
       kick stem) and enough absolute energy. Mix-only scores lie.
     """
     tempo = float(bpm)
+    if _profile.IS_HOUSE:
+        if HOUSE_NEVER_HALVE_MIN <= tempo <= HOUSE_NEVER_HALVE_MAX:
+            return False
+        # The 138–168 "always halve" band is a Zouk/Pajamathon rule; for house a real
+        # 140+ stays 140+ unless there is period-doubling evidence below.
+        always_halve_band = False
     if tempo < NEVER_HALVE_BELOW:
         return False
     in_double_band = ALWAYS_HALVE_LOW <= tempo <= ALWAYS_HALVE_HIGH
@@ -200,6 +211,8 @@ def _always_halve_double_time_band(path: str) -> bool:
     if not path:
         return True
     lowered = path.replace("\\", "/").lower()
+    if _profile.IS_HOUSE:
+        return False
     return "/house/" not in lowered
 
 

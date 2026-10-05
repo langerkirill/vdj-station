@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unicodedata
@@ -28,6 +29,28 @@ class VirtualDJRunningError(RuntimeError):
     """Raised when a database.xml write is refused because VirtualDJ is open."""
 
 
+class ReadOnlyModeError(RuntimeError):
+    """Raised when MUSIC_SORTER_READONLY is on (House fork) and a VDJ write is attempted."""
+
+
+def readonly_mode() -> bool:
+    """HOUSE FORK: MUSIC_SORTER_READONLY=1 forbids every VDJ write, unconditionally."""
+    return os.environ.get("MUSIC_SORTER_READONLY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _refuse_if_readonly(what: str) -> None:
+    if readonly_mode():
+        raise ReadOnlyModeError(
+            "Read-only (VDJ open): MUSIC_SORTER_READONLY=1 — refusing to "
+            f"{what}. This build never writes VirtualDJ files."
+        )
+
+
 def allow_vdj_running_writes() -> bool:
     """True only when emergency override env is explicitly enabled."""
     return os.environ.get(_ALLOW_RUNNING_WRITES_ENV, "").strip().lower() in {
@@ -38,35 +61,33 @@ def allow_vdj_running_writes() -> bool:
     }
 
 
+def is_virtualdj_executable(comm: str) -> bool:
+    """True only for a process whose EXECUTABLE is VirtualDJ (never its argv).
+
+    ``comm`` is the executable path/name from ``ps -o comm=``: exactly ``VirtualDJ`` or a
+    path ending in ``/Contents/MacOS/VirtualDJ``; ``VirtualDJ.exe`` only as an exact match.
+    A shell or agent whose command line merely MENTIONS VirtualDJ.app has comm zsh/bash/...
+    and never matches.
+    """
+    c = (comm or "").strip()
+    return (
+        c == "VirtualDJ"
+        or c.endswith("/Contents/MacOS/VirtualDJ")
+        or c == "VirtualDJ.exe"
+    )
+
+
 def is_virtualdj_running() -> bool:
     """
-    Return True when a VirtualDJ process appears to be active.
+    Return True when a process whose executable is VirtualDJ is running.
 
-    Prefer exact process-name matches so paths containing "VirtualDJ" (e.g.
-    Application Support folders in another process's argv) do not false-positive.
+    Uses ``ps -axo pid=,comm=`` (comm = executable path, NOT argv), so shells,
+    agents, grep/pgrep or editors whose command line only mentions VirtualDJ or
+    VirtualDJ.app can never false-positive.
     """
-    checks: List[List[str]] = [
-        ["pgrep", "-x", "VirtualDJ"],
-        ["pgrep", "-f", "/VirtualDJ.app/Contents/MacOS/VirtualDJ"],
-        ["pgrep", "-f", "VirtualDJ.exe"],
-    ]
-    for cmd in checks:
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except Exception:
-            continue
-        if result.returncode == 0 and result.stdout.strip():
-            return True
-
-    # Fallback: scan full command lines, require the app binary name.
     try:
         result = subprocess.run(
-            ["pgrep", "-fl", "VirtualDJ"],
+            ["ps", "-axo", "pid=,comm="],
             capture_output=True,
             text=True,
             check=False,
@@ -75,12 +96,9 @@ def is_virtualdj_running() -> bool:
         return False
     if result.returncode != 0:
         return False
-    for line in result.stdout.splitlines():
-        lower = line.lower()
-        if "virtualdj.app" in lower or lower.rstrip().endswith("virtualdj"):
-            # Ignore our own tooling that only mentions the folder name.
-            if "python" in lower and "virtualdj.app" not in lower:
-                continue
+    for raw in result.stdout.splitlines():
+        parts = raw.strip().split(None, 1)
+        if len(parts) == 2 and is_virtualdj_executable(parts[1]):
             return True
     return False
 
@@ -92,6 +110,7 @@ def assert_safe_to_write_vdj_database() -> None:
     Writing while VDJ is open is the main cause of the “database corrupted”
     popup and lost Cues Sorted clones: VDJ overwrites our edits on save/exit.
     """
+    _refuse_if_readonly("write database.xml")
     if not is_virtualdj_running():
         return
     if allow_vdj_running_writes():
@@ -232,6 +251,8 @@ def snapshot_last_good_database(database_path: os.PathLike | str) -> Optional[Pa
     Safe to call often; copies are throttled so color/delete clicks stay fast.
     """
     global _LAST_AUTO_GOLDEN_MONO
+    if readonly_mode():
+        return None  # never write golden copies / meta into the VDJ folder
     now = time.monotonic()
     if now - _LAST_AUTO_GOLDEN_MONO < _AUTO_GOLDEN_MIN_INTERVAL_SEC:
         return None
@@ -317,6 +338,9 @@ def recover_vdj_database_if_wiped(
     }
     if fp["healthy"] and not force:
         return result
+    if readonly_mode():
+        result["error"] = "read-only mode: auto-recovery disabled (no VDJ writes)"
+        return result
 
     if is_virtualdj_running() and not allow_vdj_running_writes():
         result["error"] = "virtualdj_running"
@@ -346,6 +370,12 @@ def recover_vdj_database_if_wiped(
         # Copy without going through write_vdj_database_text (already asserted VDJ closed).
         tmp = path.parent / f".database.xml.recovering.{os.getpid()}"
         shutil.copy2(source, tmp)
+        try:
+            assert_crlf_bytes(tmp.read_bytes(), "recovery source")
+        except LineEndingError as exc:
+            tmp.unlink(missing_ok=True)
+            result["error"] = f"source_not_crlf: {exc}"
+            return result
         src_fp = quick_database_fingerprint(tmp)
         if src_fp["size_bytes"] < WIPE_SIZE_BYTES:
             tmp.unlink(missing_ok=True)
@@ -445,6 +475,257 @@ def sanitize_vdj_database_bytes(raw: bytes) -> bytes:
     return raw.replace(b"\x00", b"")
 
 
+class LineEndingError(ValueError):
+    """database.xml bytes contain bare-LF (or bare-CR) line endings.
+
+    VirtualDJ's own database.xml is CRLF on every line. A file with even one
+    bare-LF line is rejected by VirtualDJ ("broken database") on next start.
+    """
+
+
+def legacy_fixture_mode() -> bool:
+    """MUSIC_SORTER_ALLOW_LF_DB=1 turns the CRLF / Song-form gates (and healing) off.
+
+    Only for legacy unit-test fixtures (LF, column-0 <Song>). Never set in production.
+    """
+    return os.environ.get("MUSIC_SORTER_ALLOW_LF_DB", "").strip() in {"1", "true", "yes"}
+
+
+def line_ending_counts(raw: bytes) -> Dict[str, int]:
+    return {
+        "cr": raw.count(b"\r"),
+        "lf": raw.count(b"\n"),
+        "crlf": raw.count(b"\r\n"),
+    }
+
+
+def assert_crlf_bytes(raw: bytes, what: str = "database.xml") -> Dict[str, int]:
+    """Hard gate: every line ending must be CRLF (CR count == LF count == CRLF count).
+
+    ``MUSIC_SORTER_ALLOW_LF_DB=1`` disables the gate; it exists only so legacy
+    LF-only unit-test fixtures keep working and is never set in production.
+    """
+    counts = line_ending_counts(raw)
+    if legacy_fixture_mode():
+        return counts
+    if counts["cr"] == counts["lf"] == counts["crlf"]:
+        return counts
+    bare_lf = counts["lf"] - counts["crlf"]
+    bare_cr = counts["cr"] - counts["crlf"]
+    raise LineEndingError(
+        f"{what} line endings are not pure CRLF (CR={counts['cr']}, LF={counts['lf']}, "
+        f"bare-LF lines={bare_lf}, bare-CR={bare_cr}). VirtualDJ rejects such a file, "
+        "so nothing was written."
+    )
+
+
+# --- VirtualDJ's own Song-row form ------------------------------------------------
+#   CRLF line breaks; " <Song ...>" (exactly ONE leading space); children indented
+#   two spaces; " </Song>" (one space); <Comment> directly after <Infos>
+#   (Tags, Infos, Comment, Scan, Poi...). Anything else makes VDJ reject the file.
+
+_SONG_OPEN_ANY_RE = re.compile(rb"<Song\b")
+_SONG_OPEN_BAD_LINE_RE = re.compile(rb"\r\n[ \t]*<Song\b")
+_SONG_CLOSE_BAD_LINE_RE = re.compile(rb"\r\n[ \t]*</Song>")
+_COMMENT_LINE_RE = re.compile(rb"\r\n  <Comment\b")
+
+
+def canonical_song_block(song_xml: str) -> str:
+    """Return one Song block (``<Song ...>`` .. ``</Song>``) in VDJ's exact form.
+
+    Pure CRLF, children at two spaces, closing line ' </Song>', Comment moved
+    right after Infos. Blocks with multi-line children are only CRLF-normalized.
+    The caller supplies the single leading space before ``<Song`` (a block span
+    from _find_song_span starts at ``<Song``).
+    """
+    text = to_crlf(song_xml.strip())
+    lines = text.split("\r\n")
+    if len(lines) < 2 or not lines[0].lstrip().startswith("<Song") or lines[-1].strip() != "</Song>":
+        return text
+    children = [ln.strip() for ln in lines[1:-1] if ln.strip()]
+    if any(not ln.startswith("<") for ln in children):
+        return text
+    comments = [ln for ln in children if ln.startswith("<Comment")]
+    rest = [ln for ln in children if not ln.startswith("<Comment")]
+    if comments:
+        at = 0
+        for i, ln in enumerate(rest):
+            if ln.startswith("<Infos"):
+                at = i + 1
+                break
+            if ln.startswith("<Tags"):
+                at = i + 1
+        rest[at:at] = comments
+    out = [lines[0].strip()] + ["  " + ln for ln in rest] + [" </Song>"]
+    return "\r\n".join(out)
+
+
+_XML_DECL = b'<?xml version="1.0" encoding="UTF-8"?>\r\n'
+_HEADER_RE = re.compile(rb'<\?xml version="1\.0" encoding="UTF-8"\?>\r\n<VirtualDJ_Database Version="\d+">\r\n')
+# A blank / whitespace-only line BETWEEN elements makes VDJ report a corrupted database.
+# (Blank lines inside a multi-line <Comment> text are VDJ's own and are allowed: the line
+# before them does not end with a tag's ">".)
+_BLANK_BETWEEN_RE = re.compile(rb">[ \t]*\r\n(?:[ \t]*\r\n)+")
+_CHILD_RANK = {"Tags": 0, "Infos": 1, "Comment": 2, "Scan": 3, "Poi": 4, "Link": 5}
+_INFOS_ORDER = ["SongLength", "LastModified", "FirstSeen", "FirstPlay", "LastPlay", "PlayCount",
+                "Bitrate", "UserColor", "Cover"]
+_POI_ORDER = ["Name", "Pos", "Num", "Color", "Type", "Size", "Slot"]
+_ROW_TOKEN_RE = re.compile(rb"\r\n(?: <Song\b| </Song>|  <(\w+)([^\r\n]*))")
+_ATTR_NAME_RE = re.compile(rb'\s(\w+)="')
+
+
+def _attr_order_ok(attrs: bytes, order: List[str]) -> bool:
+    last = -1
+    for m in _ATTR_NAME_RE.finditer(attrs):
+        name = m.group(1).decode("ascii", "ignore")
+        if name not in order:
+            continue
+        i = order.index(name)
+        if i < last:
+            return False
+        last = i
+    return True
+
+
+def song_form_problems(raw: bytes) -> List[str]:
+    """Why ``raw`` is not in VDJ's Song-row form (empty list = fine)."""
+    problems: List[str] = []
+    if not _HEADER_RE.match(raw):
+        problems.append(
+            'header must be <?xml version="1.0" encoding="UTF-8"?> then <VirtualDJ_Database Version="2026"> on their own CRLF lines'
+        )
+    if not raw.endswith(b"</VirtualDJ_Database>\r\n"):
+        problems.append("file must end with </VirtualDJ_Database> + CRLF (no extra lines)")
+    blank = len(_BLANK_BETWEEN_RE.findall(raw))
+    if blank:
+        problems.append(f"{blank} empty / whitespace-only line(s) between elements")
+    bad_order = bad_infos = bad_poi = 0
+    last_rank = -1
+    for m in _ROW_TOKEN_RE.finditer(raw):
+        tag = m.group(1)
+        if tag is None:
+            last_rank = -1
+            continue
+        name = tag.decode("ascii", "ignore")
+        rank = _CHILD_RANK.get(name)
+        if rank is not None:
+            if rank < last_rank:
+                bad_order += 1
+            last_rank = max(last_rank, rank)
+        if name == "Infos":
+            if not _attr_order_ok(m.group(2), _INFOS_ORDER):
+                bad_infos += 1
+        elif name == "Poi":
+            attrs = m.group(2)
+            if (b'Type="cue"' in attrs or b'Type="loop"' in attrs) and not _attr_order_ok(attrs, _POI_ORDER):
+                bad_poi += 1
+    if bad_order:
+        problems.append(f"{bad_order} Song child(ren) out of order (Tags, Infos, Comment, Scan, Poi, Link)")
+    if bad_infos:
+        problems.append(f"{bad_infos} <Infos> row(s) with attributes out of VDJ's order")
+    if bad_poi:
+        problems.append(f"{bad_poi} cue/loop <Poi> row(s) with attributes out of VDJ's order")
+    total_open = len(_SONG_OPEN_ANY_RE.findall(raw))
+    good_open = raw.count(b"\r\n <Song") - len(re.findall(rb"\r\n  +<Song", raw))
+    if good_open != total_open:
+        problems.append(
+            f"{total_open - good_open} <Song> row(s) are not indented by exactly one space"
+        )
+    total_close = raw.count(b"</Song>")
+    good_close = raw.count(b"\r\n </Song>") - len(re.findall(rb"\r\n  +</Song>", raw))
+    if good_close != total_close:
+        problems.append(
+            f"{total_close - good_close} </Song> line(s) are not indented by exactly one space"
+        )
+    late = _late_comment_spans(raw)
+    if late:
+        problems.append(f"{len(late)} <Comment> element(s) sit after Scan/Poi instead of right after Infos")
+    return problems
+
+
+def _late_comment_spans(raw: bytes) -> List[tuple]:
+    """(song_start, song_end) for each Song whose Comment is after a Scan/Poi line."""
+    spans: List[tuple] = []
+    seen_songs = set()
+    for m in _COMMENT_LINE_RE.finditer(raw):
+        c = m.start()
+        s0 = raw.rfind(b"<Song", 0, c)
+        if s0 < 0 or s0 in seen_songs:
+            continue
+        scan = raw.find(b"\r\n  <Scan", s0, c)
+        poi = raw.find(b"\r\n  <Poi", s0, c)
+        if scan >= 0 or poi >= 0:
+            seen_songs.add(s0)
+            e0 = raw.find(b"</Song>", c)
+            if e0 >= 0:
+                spans.append((s0, e0 + len(b"</Song>")))
+    return spans
+
+
+def assert_vdj_song_form(raw: bytes, what: str = "database.xml") -> None:
+    if legacy_fixture_mode():
+        return
+    problems = song_form_problems(raw)
+    if problems:
+        raise LineEndingError(
+            f"{what} is not in VirtualDJ's own Song form: " + "; ".join(problems)
+            + ". VirtualDJ rejects such a file, so nothing was written."
+        )
+
+
+def heal_song_form(raw: bytes) -> bytes:
+    """Fix the seams a splice can leave (stray indentation, late Comment) before writing."""
+    if legacy_fixture_mode():
+        return raw
+    if _BLANK_BETWEEN_RE.search(raw):
+        raw = re.sub(rb"(>[ \t]*\r\n)(?:[ \t]*\r\n)+", rb"\1", raw)
+    if _SONG_OPEN_BAD_LINE_RE.search(raw) or _SONG_CLOSE_BAD_LINE_RE.search(raw):
+        raw = _SONG_OPEN_BAD_LINE_RE.sub(b"\r\n <Song", raw)
+        raw = _SONG_CLOSE_BAD_LINE_RE.sub(b"\r\n </Song>", raw)
+    late = _late_comment_spans(raw)
+    for a, b in reversed(late):
+        block = canonical_song_block(raw[a:b].decode("utf-8"))
+        raw = raw[:a] + block.encode("utf-8") + raw[b:]
+    return raw
+
+
+
+def to_crlf(text: str) -> str:
+    """Normalize any mix of LF / CRLF to pure CRLF (for text spliced into a CRLF file)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
+_AUTOCUE_SAFETY_PATH = Path("/Users/kirilllanger/src/vdj-automatic-cuer/vdj_database_safety.py")
+_autocue_safety_mod: Any = None
+
+
+def autocue_safety_module() -> Any:
+    """The AutoCue repo's vdj_database_safety, imported read-only under its own name.
+
+    Its ``database_integrity_stats`` / ``validate_database_replacement`` run as an
+    independent second opinion after every write. Falls back to this module's
+    copies if the AutoCue checkout is not present.
+    """
+    global _autocue_safety_mod
+    if _autocue_safety_mod is not None:
+        return _autocue_safety_mod
+    override = os.environ.get("MUSIC_SORTER_AUTOCUE_SAFETY_PATH", "").strip()
+    path = Path(override) if override else _AUTOCUE_SAFETY_PATH
+    mod: Any = None
+    if path.is_file():
+        try:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("_autocue_vdj_database_safety", path)
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+        except Exception:
+            mod = None
+    _autocue_safety_mod = mod if mod is not None else sys.modules[__name__]
+    return _autocue_safety_mod
+
+
 def read_vdj_database_text(database_path: os.PathLike | str) -> str:
     """
     Read database.xml while preserving VirtualDJ's CRLF line endings.
@@ -470,6 +751,7 @@ def vdj_database_exclusive_lock(database_path: os.PathLike | str) -> Iterator[No
     Complements the in-process sorter.db_lock so two Music Sorter / AutoCue
     processes cannot last-write-wins the same library.
     """
+    _refuse_if_readonly("take the database.xml write lock (creates a lock file in the VDJ folder)")
     lock_path = vdj_database_lock_path(database_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(lock_path, "a+", encoding="utf-8")
@@ -568,7 +850,8 @@ def format_vdj_poi_line(
     attrs = []
     if name:
         attrs.append(f'Name="{_escape_xml_attr(name)}"')
-    attrs.append(f'Pos="{pos:.6f}"')
+    if abs(float(pos)) >= 5e-7:  # VDJ drops Pos when it is 0
+        attrs.append(f'Pos="{pos:.6f}"')
     attrs.append(f'Num="{num}"')
     attrs.append(f'Color="{color}"')
     attrs.append(f'Type="{poi_type}"')
@@ -730,10 +1013,8 @@ def inject_pois_into_song_xml(
 
 def serialize_vdj_database(root: ET.Element) -> str:
     """Serialize a full database tree (legacy path; prefer surgical rewrite)."""
-    xml_str = ET.tostring(root, encoding="unicode")
-    if "\r\n" not in xml_str and "\n" in xml_str:
-        xml_str = xml_str.replace("\n", "\r\n")
-    return xml_str
+    # ElementTree normalizes line breaks to LF — always rebuild pure CRLF.
+    return to_crlf(ET.tostring(root, encoding="unicode"))
 
 
 def validate_database_replacement(
@@ -886,7 +1167,11 @@ def normalize_user2_dest(label: str) -> str:
     if parts[-1] == "Kizouk" and (len(parts) == 1 or parts[0] == "Sets"):
         return "Kizouk"
     head = parts[0]
-    if head in {"Add Cues", "Cues Sorted", "Sets"} or head.startswith("Cues Sorted"):
+    if (
+        head in {"Add Cues", "Cues Sorted", "Sets", "Cues", "Ready For Sort"}
+        or head.startswith("Cues Sorted")
+        or head.startswith("Pajamathon")
+    ):
         return ""
     return text
 
@@ -1198,10 +1483,23 @@ def _replace_database_parts_locked(
     original_stats: Optional[Dict[str, int]] = None,
     stats_fn: Optional[Callable[[os.PathLike | str], Dict[str, int]]] = None,
 ) -> Dict[str, int]:
-    """Tempfile + validate + os.replace. Caller must hold vdj_database_exclusive_lock."""
+    """Tempfile + validate + os.replace. Caller must hold vdj_database_exclusive_lock.
+
+    Bytes only (no newline translation). HARD GATES: the existing file and the
+    candidate must be pure CRLF before anything is replaced; after the replace the
+    file is read back, must still be pure CRLF and pass the AutoCue module's
+    database_integrity_stats / validate_database_replacement, otherwise the
+    previous bytes are restored and the write is refused with an error.
+    """
     directory = path.parent
     assert_safe_to_write_vdj_database()
     ensure_healthy_vdj_database(path)
+
+    original_raw: Optional[bytes] = None
+    if path.exists():
+        original_raw = path.read_bytes()
+        if original_raw:
+            assert_crlf_bytes(original_raw, f"existing {path.name}")
 
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -1209,23 +1507,21 @@ def _replace_database_parts_locked(
         dir=str(directory),
     )
     temp_path = Path(temp_name)
+    rollback_path = directory / f".{path.name}.prewrite.{os.getpid()}"
     counter = stats_fn or database_integrity_stats
     try:
+        candidate_raw = heal_song_form(
+            b"".join(sanitize_vdj_database_bytes(part.encode("utf-8")) for part in parts)
+        )
         with os.fdopen(fd, "wb") as handle:
-            for part in parts:
-                handle.write(sanitize_vdj_database_bytes(part.encode("utf-8")))
+            handle.write(candidate_raw)
             handle.flush()
             os.fsync(handle.fileno())
 
         candidate_raw = temp_path.read_bytes()
+        assert_crlf_bytes(candidate_raw, f"new {path.name}")
+        assert_vdj_song_form(candidate_raw, f"new {path.name}")
         if original_stats is not None:
-            if path.exists():
-                original_raw_head = path.read_bytes()[:4096]
-                if b"\r\n" in original_raw_head and b"\r\n" not in candidate_raw[:8192]:
-                    raise ValueError(
-                        "Generated database dropped CRLF line endings; "
-                        "VirtualDJ will treat this as corrupt and reset the library"
-                    )
             stats = validate_database_replacement(
                 temp_path, original_stats, stats_fn=counter
             )
@@ -1233,8 +1529,20 @@ def _replace_database_parts_locked(
             stats = counter(temp_path)
 
         assert_safe_to_write_vdj_database()
+        if original_raw is not None:
+            rollback_path.write_bytes(original_raw)
         os.replace(temp_path, path)
         _fsync_directory(directory)
+        try:
+            _post_write_gate(path, original_raw, original_stats, candidate_raw)
+        except Exception as exc:
+            if original_raw is not None and rollback_path.exists():
+                os.replace(rollback_path, path)
+                _fsync_directory(directory)
+                raise type(exc)(
+                    f"{exc} — database.xml was rolled back to the bytes from before this write."
+                ) from exc
+            raise
         try:
             snapshot_last_good_database(path)
         except Exception:
@@ -1244,6 +1552,55 @@ def _replace_database_parts_locked(
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
         raise
+    finally:
+        rollback_path.unlink(missing_ok=True)
+
+
+_POI_TAG_BYTES_RE = re.compile(rb"<Poi\b[^>]*/>")
+
+
+def _raw_integrity_stats(raw: bytes) -> Dict[str, int]:
+    """database_integrity_stats-equivalent counts straight from bytes (no XML parse)."""
+    cue_loop = 0
+    for m in _POI_TAG_BYTES_RE.finditer(raw):
+        tag = m.group(0)
+        tm = re.search(rb'\bType\s*=\s*"([^"]*)"', tag)
+        if tm is None or tm.group(1).decode("ascii", "ignore") not in MANUAL_CUE_TYPES:
+            continue
+        nm = re.search(rb'\bNum\s*=\s*"([^"]*)"', tag)
+        if (nm.group(1) if nm else b"0") != b"0":
+            cue_loop += 1
+    return {
+        "size_bytes": len(raw),
+        "song_count": len(re.findall(rb"<Song\b", raw)),
+        "cue_loop_count": cue_loop,
+    }
+
+
+def _post_write_gate(
+    path: Path,
+    original_raw: Optional[bytes],
+    original_stats: Optional[Dict[str, int]],
+    expected_raw: bytes,
+) -> None:
+    """Read the file back as bytes and re-verify it (see _replace_database_parts_locked)."""
+    back = path.read_bytes()
+    if back != expected_raw:
+        raise ValueError("Read-back of database.xml does not match the bytes that were written")
+    assert_crlf_bytes(back, f"written {path.name}")
+    # `back` is byte-for-byte the candidate that already passed assert_vdj_song_form just before the replace
+    # (checked above), so running the same ~3 s song-form scan on identical bytes again proves nothing new.
+    if back is not expected_raw and back != expected_raw:  # pragma: no cover - raised above already
+        assert_vdj_song_form(back, f"written {path.name}")
+    ac = autocue_safety_module()
+    stats_as_written = ac.database_integrity_stats(path)  # full XML parse of the file as written (once)
+    if original_raw is not None:
+        before = _raw_integrity_stats(original_raw)
+        if original_stats is not None:
+            # An intentional removal passes pre-reduced expectations; honor them.
+            before = {k: min(before[k], int(original_stats.get(k, before[k]))) for k in before}
+        # same file, same stats: reuse the parse above instead of parsing the 38 MB file a second time
+        ac.validate_database_replacement(path, before, stats_fn=lambda _p: stats_as_written)
 
 
 def atomic_replace_database_parts(
@@ -1274,4 +1631,6 @@ def atomic_replace_database(
 
 def copy_database_atomically(source: os.PathLike | str, destination: os.PathLike | str) -> None:
     """Copy a validated database file into place."""
+    _refuse_if_readonly("copy a database file into place")
+    assert_crlf_bytes(Path(source).read_bytes(), "database copy source")
     shutil.copy2(source, destination)

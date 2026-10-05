@@ -34,27 +34,15 @@ class LibraryTests(unittest.TestCase):
                 library_mod.is_pajamathon_set_audio(inbox, sets_root=sets)
             )
 
-    def test_create_folder_at_root_and_nested(self):
+    def test_create_folder_is_disabled_in_house_fork(self):
+        # HOUSE FORK: sort destinations are fixed; nothing creates folders.
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            house = root / "House"
-            zouk = root / "Zouk"
-            chill = zouk / "Chill"
+            house = Path(tmp) / "House"
             house.mkdir()
-            chill.mkdir(parents=True)
-
-            with patch.dict(
-                library_mod.LIBRARIES, {"House": house, "Zouk": zouk}, clear=True
-            ):
-                created = library_mod.create_folder("House", name="Dreamy")
-                self.assertEqual(created["relative_path"], "Dreamy")
-                self.assertTrue((house / "Dreamy").is_dir())
-
-                nested = library_mod.create_folder(
-                    "Zouk", name="Amber", parent_relative_path="Chill"
-                )
-                self.assertEqual(nested["relative_path"], "Chill/Amber")
-                self.assertTrue((chill / "Amber").is_dir())
+            with patch.dict(library_mod.LIBRARIES, {"House": house}, clear=True):
+                with self.assertRaises(ValueError):
+                    library_mod.create_folder("House", name="Dreamy")
+                self.assertFalse((house / "Dreamy").exists())
 
     def test_create_folder_rejects_escape(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,19 +53,19 @@ class LibraryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     library_mod.create_folder("House", name="..")
 
-    def test_tree_includes_nested_and_skips_backups(self):
+    def test_tree_lists_real_house_subfolders_without_creating_any(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            zouk = root / "Zouk"
-            (zouk / "Chill" / "Mystical").mkdir(parents=True)
-            (zouk / "Chill" / "low_quality_backups").mkdir()
-            (zouk / "Chill" / "Mystical" / "song.flac").write_bytes(b"x")
-            with patch.dict(library_mod.LIBRARIES, {"Zouk": zouk}, clear=True):
-                tree = library_mod.list_library_tree("Zouk")
+            house = Path(tmp) / "House"
+            (house / "Amped").mkdir(parents=True)
+            (house / "Amped" / "song.flac").write_bytes(b"x")
+            (house / "Chill" / "Journey").mkdir(parents=True)
+            with patch.dict(library_mod.LIBRARIES, {"House": house}, clear=True):
+                tree = library_mod.list_library_tree("House")
                 paths = library_mod.flatten_folder_paths(tree["folders"])
-                self.assertIn("Chill", paths)
-                self.assertIn("Chill/Mystical", paths)
-                self.assertNotIn("Chill/low_quality_backups", paths)
+                self.assertEqual(paths, ["Amped", "Chill", "Chill/Journey"])
+                by_path = {f["relative_path"]: f for f in tree["folders"]}
+                self.assertEqual(by_path["Amped"]["track_count"], 1)
+            self.assertEqual(sorted(p.name for p in house.iterdir()), ["Amped", "Chill"])
 
     def test_list_ready_tracks_ignores_stems(self):
         with tempfile.TemporaryDirectory() as tmp:

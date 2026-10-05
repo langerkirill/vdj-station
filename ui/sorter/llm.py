@@ -21,8 +21,8 @@ from vdj_cuer.gemini_call import (  # noqa: E402
     is_missing_model_error,
 )
 
-# Pin: gemini-3.7-flash everywhere in the sorter.
-PREFERRED_SORTER_MODEL = "gemini-3.7-flash"
+# House fork pin: gemini-3.8-flash everywhere in the sorter (fork only).
+PREFERRED_SORTER_MODEL = "gemini-3.8-flash"
 DEAD_MODELS = {
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -30,10 +30,9 @@ DEAD_MODELS = {
 }
 MODEL_FALLBACKS = (
     PREFERRED_SORTER_MODEL,
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-pro",
 )
 
 

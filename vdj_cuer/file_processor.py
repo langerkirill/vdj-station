@@ -328,9 +328,8 @@ class FileProcessorMixin:
                 original_stats = self._database_integrity_stats(self.vdj_database_path)
                 xml_str = ET.tostring(root, encoding="unicode")
 
-                # Ensure CRLF line endings for VDJ compatibility
-                if "\r\n" not in xml_str and "\n" in xml_str:
-                    xml_str = xml_str.replace("\n", "\r\n")
+                # ElementTree normalizes line breaks to LF: ALWAYS rebuild pure CRLF.
+                xml_str = xml_str.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
 
                 # Validate XML is well-formed before writing
                 try:
@@ -346,6 +345,13 @@ class FileProcessorMixin:
                 # Verify before replacing
                 try:
                     ET.parse(temp_path)
+                    # HARD GATE: refuse any bare-LF line (VirtualDJ rejects the file).
+                    from vdj_database_safety import assert_crlf_bytes, assert_vdj_song_form
+
+                    with open(temp_path, "rb") as _fh:
+                        _cand = _fh.read()
+                    assert_crlf_bytes(_cand, "AutoCue database candidate")
+                    assert_vdj_song_form(_cand, "AutoCue database candidate")
                     self._validate_database_replacement(temp_path, original_stats)
                     # If parsing succeeds, replace the original file
                     shutil.move(temp_path, self.vdj_database_path)

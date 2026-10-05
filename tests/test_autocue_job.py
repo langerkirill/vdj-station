@@ -113,6 +113,61 @@ class RunOneTests(unittest.TestCase):
         self.assertEqual(result["analysis_loops"], 2)
         cuer._apply_cues_to_database.assert_called_once()
 
+    def test_missing_stems_blocks_cues_and_loops(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "song.flac"
+            audio.write_bytes(b"x")
+            result = run_one(
+                str(audio),
+                database_path=str(Path(tmp) / "database.xml"),
+                write_scope="all",
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("VirtualDJ", result.get("error") or "")
+        self.assertIn("stems", (result.get("error") or "").lower())
+
+    def test_missing_stems_blocks_loops_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "song.flac"
+            audio.write_bytes(b"x")
+            result = run_one(
+                str(audio),
+                database_path=str(Path(tmp) / "database.xml"),
+                write_scope="loops",
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("vdjstems", result.get("error") or "")
+
+    def test_missing_stems_allows_cues_only(self) -> None:
+        analysis = {
+            "measure_changes": [{"timestamp": 1.0}],
+            "loop_segments": [],
+            "song_structure": {"bpm": 90},
+        }
+        cuer = MagicMock()
+        cuer.model_name = "gemini"
+        cuer.analyze_audio_with_gemini.return_value = analysis
+        cuer.get_song_length.return_value = 200.0
+        cuer.get_song_bpm_from_database.return_value = None
+        cuer._postprocess_loop_segments.side_effect = lambda data, *_a, **_k: data
+        cuer._apply_cues_to_database.return_value = True
+        cuer.backup_database.return_value = "/tmp/backup.xml"
+        with patch("vdj_cuer.autocue_job._build_cuer", return_value=cuer), patch(
+            "vdj_cuer.autocue_job.load_gemini_api_key"
+        ), patch(
+            "vdj_cuer.autocue_job.apply_compute_thread_limits"
+        ), tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "song.flac"
+            audio.write_bytes(b"x")
+            result = run_one(
+                str(audio),
+                database_path=str(Path(tmp) / "database.xml"),
+                write_scope="cues",
+                dry_run=False,
+            )
+        self.assertTrue(result["ok"])
+        cuer._apply_cues_to_database.assert_called_once()
+
     def test_empty_analysis_is_not_ok(self) -> None:
         cuer = MagicMock()
         cuer.model_name = "gemini"

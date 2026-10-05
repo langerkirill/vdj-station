@@ -19,15 +19,25 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .autocue_path import ensure_autocue_on_path
+from . import profile as _profile
 from .config import VDJ_DATABASE
 from .relocate import CueSummary, summarize_cues
 
-# AutoCue's _actual_bpm window is 50–200 musical BPM (slow zouk / half-time).
-MIN_BPM = 50.0
-MAX_BPM = 200.0
-# Common double-time zone (VDJ often reports 140 when the music is ~70).
-DOUBLE_TIME_LOW = 128.0
-DOUBLE_TIME_HIGH = 155.0
+if _profile.IS_HOUSE:
+    # House fork: organic / melodic / deep house (~115–125). Anything outside
+    # 90–160 is almost certainly a mis-detected tempo. No "double-time" nag:
+    # a 128–155 reading is normal for house, never an automatic halve suggestion.
+    MIN_BPM = 90.0
+    MAX_BPM = 160.0
+    DOUBLE_TIME_LOW = None
+    DOUBLE_TIME_HIGH = None
+else:
+    # AutoCue's _actual_bpm window is 50–200 musical BPM (slow zouk / half-time).
+    MIN_BPM = 50.0
+    MAX_BPM = 200.0
+    # Common double-time zone (VDJ often reports 140 when the music is ~70).
+    DOUBLE_TIME_LOW = 128.0
+    DOUBLE_TIME_HIGH = 155.0
 # Phase vs beatgrid POI disagreement (seconds) — matches vdj_audit threshold.
 PHASE_POI_TOLERANCE = 0.02
 # Deep verify: require this confidence ratio to claim a clear misalignment.
@@ -107,7 +117,7 @@ def _base_from_cues(cues: CueSummary, path_str: str) -> dict[str, Any]:
         status = "blocked"
         label = "No usable BPM"
         issues.append(
-            "VirtualDJ has no usable BPM (need ~50–200). Analyze the track in VDJ "
+            f"VirtualDJ has no usable BPM (need ~{MIN_BPM:g}–{MAX_BPM:g}). Analyze the track in VDJ "
             "before AutoCue."
         )
 
@@ -139,7 +149,12 @@ def _base_from_cues(cues: CueSummary, path_str: str) -> dict[str, Any]:
         )
 
     suggest_halve_bpm = False
-    if bpm is not None and DOUBLE_TIME_LOW <= bpm <= DOUBLE_TIME_HIGH:
+    if (
+        bpm is not None
+        and DOUBLE_TIME_LOW is not None
+        and DOUBLE_TIME_HIGH is not None
+        and DOUBLE_TIME_LOW <= bpm <= DOUBLE_TIME_HIGH
+    ):
         if status == "ok":
             status = "warn"
             label = "Possible double-time BPM"

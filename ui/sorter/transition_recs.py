@@ -14,12 +14,15 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from . import profile as _profile
 from .llm import DEFAULT_MODEL, ask_json, load_api_key, models_to_try
 
 from .autocue_path import ensure_autocue_on_path
 from .config import (
     AUDIO_EXTENSIONS,
+    ADD_CUES,
     CUES_SORTED,
+    HOUSE_ROOT,
     LIBRARIES,
     LIBRARY_SKIP_DIR_NAMES,
     READY_FOR_SORT,
@@ -56,11 +59,30 @@ ensure_autocue_on_path()
 MODEL_FALLBACKS = models_to_try(DEFAULT_MODEL)
 
 BPM_TOLERANCE = float(os.getenv("MUSIC_SORTER_REC_BPM_TOLERANCE", "5"))
+# House fork: fixed organic-house window (120 ± 5 = 115–125) instead of "around the
+# playing track". Candidates are filtered to this window AND to Camelot-compatible
+# keys of the playing/selected track; the source BPM only fine-tunes the ranking.
+TARGET_BPM: Optional[float] = _profile.TARGET_BPM if _profile.IS_HOUSE else None
+TARGET_BPM_MIN: Optional[float] = (
+    TARGET_BPM - BPM_TOLERANCE if TARGET_BPM is not None else None
+)
+TARGET_BPM_MAX: Optional[float] = (
+    TARGET_BPM + BPM_TOLERANCE if TARGET_BPM is not None else None
+)
+
+
+def bpm_in_target_window(bpm: Optional[float]) -> bool:
+    """True when ``bpm`` is inside the profile's fixed target window (or no target)."""
+    if TARGET_BPM_MIN is None or TARGET_BPM_MAX is None:
+        return True
+    if not bpm:
+        return False
+    return TARGET_BPM_MIN <= float(bpm) <= TARGET_BPM_MAX
 MAX_CANDIDATES_TO_GEMINI = int(os.getenv("MUSIC_SORTER_REC_CANDIDATE_CAP", "48"))
 MAX_SCAN_SONGS = int(os.getenv("MUSIC_SORTER_REC_SCAN_CAP", "4000"))
 PICKS_PER_BUCKET = int(os.getenv("MUSIC_SORTER_REC_PICKS_PER_BUCKET", "5"))
-# Rolling calendar days ending today: Fri–Sat event plus the day before.
-REC_PLAY_WINDOW_DAYS = int(os.getenv("MUSIC_SORTER_REC_PLAY_WINDOW_DAYS", "3"))
+# Gig nights only (Friday + Saturday). Midweek History is not blocked.
+REC_PLAY_WINDOW_DAYS = int(os.getenv("MUSIC_SORTER_REC_PLAY_WINDOW_DAYS", "2"))
 
 
 class EnergyPickSchema(BaseModel):
@@ -164,7 +186,7 @@ def _scan_library_songs_from_database(
     force: bool = False,
 ) -> list[dict[str, Any]]:
     """
-    Lightweight pass over database.xml for House/Zouk/Cues Sorted/Ready/Sets.
+    Lightweight pass over database.xml for Cues Sorted (House) / Add Cues / Ready / Sets.
 
     Returns dicts: path, artist, title, bpm, key, genre, vibe, cue_count, library, relative_path
     """
@@ -191,10 +213,13 @@ def _scan_library_songs_from_database(
     if not db.is_file():
         return []
 
+    # House fork: Cues Sorted and the House library (the House library) are both
+    # cued destinations. Add Cues is included so a cued Sauna Fest House crate can
+    # feed recs before it is sorted.
     roots: list[tuple[str, Path]] = [
-        ("House", LIBRARIES["House"].resolve()),
-        ("Zouk", LIBRARIES["Zouk"].resolve()),
         ("Cues Sorted", CUES_SORTED.resolve()),
+        ("House", HOUSE_ROOT.resolve()),
+        ("Add Cues", ADD_CUES.resolve()),
         ("Ready for Sort", READY_FOR_SORT.resolve()),
         ("Sets", SETS_ROOT.resolve()),
     ]
@@ -358,7 +383,7 @@ def track_block_keys(
 
 
 def is_pajamathon_set_filepath(path: str = "", library: str = "") -> bool:
-    """True when this FilePath is the Sets/Pajamathon copy (not Cues Sorted / Zouk)."""
+    """True when this FilePath is the Sets/Pajamathon copy (not Cues Sorted)."""
     lib = (library or "").strip()
     p = (path or "").replace("\\", "/")
     if lib == "Pajamathon":
@@ -443,7 +468,7 @@ def recent_play_windows(
     *,
     days: int = REC_PLAY_WINDOW_DAYS,
 ) -> dict[str, set[str]]:
-    """Identity keys for plays in the event window (today / yesterday / earlier)."""
+    """Identity keys for Friday/Saturday gig plays (today / yesterday / earlier)."""
     groups = recent_history_play_groups(days=days)
     today = played_today_block_keys(groups["today"])
     yesterday = played_today_block_keys(groups["yesterday"])
@@ -648,7 +673,11 @@ def build_candidates(
             continue
 
         bpm = s.get("bpm")
-        if source_bpm and bpm:
+        if TARGET_BPM is not None:
+            # Target mode: fixed window (115–125), independent of the source BPM.
+            if not bpm_in_target_window(bpm):
+                continue
+        elif source_bpm and bpm:
             if abs(float(bpm) - float(source_bpm)) > bpm_tolerance:
                 continue
         elif source_bpm and not bpm:
@@ -696,6 +725,9 @@ def build_candidates(
             score += 20 + min(history_count, 30)
         if source_bpm and bpm and abs(float(bpm) - float(source_bpm)) <= 2:
             score += 5
+        if TARGET_BPM is not None and bpm:
+            # closer to the 120 pocket is slightly better (max +3)
+            score += max(0.0, 3.0 - abs(float(bpm) - TARGET_BPM) * 0.6)
         if key_to_camelot(source_key) and key_to_camelot(key) == key_to_camelot(
             source_key
         ):
@@ -705,12 +737,12 @@ def build_candidates(
         cand_fam = genre_family(genre, vibe, artist=artist, title=title)
         # Prefer a descriptive genre label for UI when tag empty but family known
         display_genre = genre
-        if not display_genre and cand_fam == "psy_tribal_world":
-            display_genre = "Tribal / psychedelic"
-        elif not display_genre and cand_fam == "rnb_soul_zouk":
-            display_genre = "Zouk / R&B-adjacent"
-        elif not display_genre and cand_fam == "house_dance":
-            display_genre = "House / dance"
+        if not display_genre and cand_fam == "psy_world":
+            display_genre = "Psy / world"
+        elif not display_genre and cand_fam == "vocal_soul":
+            display_genre = "R&B / soul vocal"
+        elif not display_genre and cand_fam == "house":
+            display_genre = "Organic / melodic house"
 
         src_vibe_l = (source_vibe or "").lower()
         weak_source = (not src_fam) and (
@@ -723,11 +755,11 @@ def build_candidates(
                 score += 16
             else:
                 score -= 14  # key/BPM ok, but different set room
-        elif weak_source and cand_fam == "psy_tribal_world":
-            # Unlabeled modern vocals in Add Cues rarely want India/tribal as "same"
+        elif weak_source and cand_fam == "psy_world":
+            # Unlabeled Add Cues sources rarely want psytrance / world as "same"
             score -= 18
-        elif weak_source and cand_fam == "rnb_soul_zouk":
-            # Soft default for Add Cues vocal tracks → zouk/R&B/kiz room
+        elif weak_source and cand_fam == "house":
+            # Soft default for unlabeled Add Cues sources → house room
             score += 10
         elif genres_compatible(source_genre, source_vibe, genre, vibe):
             score += 8
@@ -777,8 +809,8 @@ def build_candidates(
         "Pajamathon": 4,
         "Sets": 4,
         "Cues Sorted": 3,
-        "House": 2,
-        "Zouk": 2,
+        "House": 3,
+        "Add Cues": 2,
         "Ready for Sort": 1,
     }
     best_by_label: dict[str, Candidate] = {}
@@ -866,6 +898,13 @@ def _gemini_rank(
         )
     else:
         mix_hole_block = "MIX-OUT HOLES: unknown (cue names were too thin to infer)."
+    if TARGET_BPM is not None:
+        BPM_RULE_LINE = (
+            f"BPM inside the organic-house window {TARGET_BPM_MIN:g}–{TARGET_BPM_MAX:g} "
+            f"(target {TARGET_BPM:g}); the current track is {source.get('bpm')} BPM"
+        )
+    else:
+        BPM_RULE_LINE = f"BPM within ±{BPM_TOLERANCE} of the current track"
     prompt = f"""You are a working DJ coach for harmonic mixing AND genre/vibe continuity.
 
 CURRENT TRACK (on deck / just played):
@@ -881,7 +920,7 @@ CURRENT TRACK (on deck / just played):
 
 CANDIDATES (hard-filtered pool — ONLY these are legal):
 - Mixable Camelot key (same, relative major/minor, or ±1 adjacent on the wheel)
-- BPM within ±{BPM_TOLERANCE} of the current track
+- {BPM_RULE_LINE}
 - Cued library tracks the DJ can actually transition to, including Pajamathon/Sets copies
 - Each candidate lists genre (tag) and vibe/folder (library path context)
 
@@ -892,17 +931,16 @@ From this filtered pool, pick the BEST next tracks in THREE energy buckets:
 3) lower_energy — cool down / reset while still in key and tempo range
 
 Genre / vibe rules (critical):
-- BPM + key match is NOT enough. A psychedelic/tribal/organic track (e.g. Desert
-  Dwellers, India folder, Tribal tag) is NOT "same energy" as contemporary R&B,
-  neo-soul, urban kiz, or pop-R&B — even at the same BPM/key.
+- This is an organic house / melodic house / deep house set (about 120 BPM).
+- BPM + key match is NOT enough. Psytrance / world-ambient or contemporary R&B /
+  hip-hop is NOT "same energy" as organic or melodic house — even at the same BPM/key.
 - If Genre is a model guess or a VDJ tag, TRUST it for family continuity.
 - If Genre is empty, INFER from artist + title only. Ignore inbox folders
   (Add Cues, Ready for Sort, AC Low Quality, Cues Sorted/Energy).
-  Example: Rubí "Seadoo" → modern R&B / alternative R&B; not tribal/psy.
 - same_energy: strongly prefer the same genre family and similar vibe/folder
-  (e.g. R&B→R&B/soul/zouk/kiz; tribal/psy→tribal/organic/world; house→house/dance).
+  (e.g. organic house→organic/melodic house; deep house→deep/hypnotic house).
 - higher_energy / lower_energy: energy can shift, but still prefer a plausible
-  genre bridge (don't jump from intimate R&B into festival psy without reason).
+  genre bridge (don't jump from deep hypnotic house into a vocal pop track without reason).
 - If you pick a genre contrast, say so honestly in reason and lower confidence.
 - Prefer closer genre/vibe over a "perfect" key that sounds like a different set.
 - Pajamathon/Sets copies are valid next tracks. If the current song is already in a set, prefer other Pajamathon/Sets candidates when they fit.
@@ -911,9 +949,9 @@ Genre / vibe rules (critical):
 Other rules:
 - ONLY use paths exactly as listed in candidates (copy path string verbatim).
 - NEVER recommend the CURRENT TRACK (or any library copy of it).
-- NEVER recommend a track already played in this event window (today, yesterday, and the day before — already removed from the pool).
+- NEVER recommend a track already played on this event's Friday or Saturday (already removed from the pool). Wednesday/Thursday plays are allowed.
 - Each track path may appear in AT MOST ONE bucket total (no repeats across higher/same/lower).
-- Every pick must stay in-key and within ±{BPM_TOLERANCE} BPM (already true of the list).
+- Every pick must stay in-key and inside the BPM rule above (already true of the list).
 - Prefer tracks with history×N when musical fit is equal.
 - Prefer closer BPM and exact Camelot match when deciding confidence.
 - Return exactly up to {PICKS_PER_BUCKET} picks per bucket (never more; fewer only if the pool is thin). Prefer distinct songs.
@@ -1216,12 +1254,19 @@ def recommend_transitions(
                 "higher_energy": [],
                 "same_energy": [],
                 "lower_energy": [],
-                "notes": "No in-key, ±BPM cued candidates found in House/Zouk/Cues Sorted/Sets.",
+                "notes": (
+                    f"No in-key cued candidates in the {TARGET_BPM_MIN:g}–{TARGET_BPM_MAX:g} BPM window found in Cues Sorted / House / Add Cues / Sets."
+                    if TARGET_BPM is not None
+                    else "No in-key, ±BPM cued candidates found in Cues Sorted/House/Sets."
+                ),
                 "model": "",
                 "candidate_count": 0,
             },
             "filters": {
                 "bpm_tolerance": BPM_TOLERANCE,
+                "target_bpm": TARGET_BPM,
+                "bpm_min": TARGET_BPM_MIN,
+                "bpm_max": TARGET_BPM_MAX,
                 **play_filters,
             },
         }
@@ -1260,15 +1305,22 @@ def recommend_transitions(
         "recommendations": recs,
         "filters": {
             "bpm_tolerance": BPM_TOLERANCE,
+            "target_bpm": TARGET_BPM,
+            "bpm_min": TARGET_BPM_MIN,
+            "bpm_max": TARGET_BPM_MAX,
             "require_key_compatible": True,
             "require_cued": True,
             "consider_genre": True,
             "consider_timing": True,
             "genre_source": source.get("genre_source") or "",
             "genre_family": source.get("genre_family") or "",
-            "libraries": ["House", "Zouk", "Cues Sorted", "Ready for Sort", "Pajamathon", "Sets"],
+            "libraries": ["Cues Sorted", "House", "Add Cues", "Ready for Sort", "Sets"],
             "label": (
-                f"In-key · ±{int(BPM_TOLERANCE)} BPM · genre-aware"
+                (
+                    f"In-key · {TARGET_BPM_MIN:g}–{TARGET_BPM_MAX:g} BPM · genre-aware"
+                    if TARGET_BPM is not None
+                    else f"In-key · ±{int(BPM_TOLERANCE)} BPM · genre-aware"
+                )
                 + (
                     " (guessed)"
                     if source.get("genre_source") == "gemini"

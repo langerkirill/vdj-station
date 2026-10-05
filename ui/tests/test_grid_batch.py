@@ -13,6 +13,7 @@ import json
 import math
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -99,7 +100,30 @@ class DownbeatMod4Tests(unittest.TestCase):
         self.assertEqual(gb.bar_phase_shift_beats(0.12), 0)
 
 
-class DecideHalveTests(unittest.TestCase):
+class _LegacyZoukRules(unittest.TestCase):
+    """HOUSE FORK: exercise the retained legacy (non-house) halving rules."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(gb._profile, "IS_HOUSE", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class HouseHalveTests(unittest.TestCase):
+    def test_house_never_halves_100_to_135(self) -> None:
+        for bpm in (100.0, 115.0, 120.0, 124.0, 128.0, 135.0):
+            self.assertFalse(
+                gb.decide_halve(bpm, score_full=0.05, score_half=0.9, ac_ratio=1.6),
+                bpm,
+            )
+
+    def test_house_has_no_always_halve_band(self) -> None:
+        self.assertFalse(gb.decide_halve(150.0, score_full=0.2, score_half=0.2))
+        self.assertFalse(gb._always_halve_double_time_band("/x/Add Cues/y.flac"))
+
+
+class DecideHalveTests(_LegacyZoukRules):
     def test_never_halve_below_110(self) -> None:
         self.assertFalse(gb.decide_halve(70.0, score_full=0.01, score_half=0.9))
         self.assertFalse(gb.decide_halve(100.0, score_full=0.02, score_half=0.4))
@@ -256,7 +280,7 @@ class FixtureContractTests(unittest.TestCase):
         self.assertGreaterEqual(checked, 12)
 
 
-class SyntheticAudioPlanTests(unittest.TestCase):
+class SyntheticAudioPlanTests(_LegacyZoukRules):
     def test_double_time_one_twenty_is_halved_and_phase_kept(self) -> None:
         # True 60 BPM kicks; VDJ stored 120 with the same time origin.
         onsets, hop = _synthetic_onsets(period=1.0, phase=0.2)

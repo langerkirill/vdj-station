@@ -39,6 +39,10 @@ def _loop(interval_s: float = 10.0) -> None:
 
 def start_sideview_recs_watch(*, interval_s: float = 10.0) -> None:
     global _watch_started
+    from . import profile as _profile
+
+    if _profile.readonly() or _profile.IS_HOUSE:
+        return  # House fork: no background Sideview writer
     with _watch_lock:
         if _watch_started:
             return

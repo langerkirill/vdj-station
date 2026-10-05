@@ -30,6 +30,29 @@ def _req(name: str) -> str:
     return json.dumps(str(UI_STATIC / name))
 
 
+class BestSetHidePlayedHelperTests(unittest.TestCase):
+    def test_visible_items_drop_live_played_when_hide_is_on(self) -> None:
+        out = _node(
+            f"""
+const P = require({_req("practice.js")});
+const items = [
+  {{ id: 1, live_played: true, from_track: "Reina - Burn" }},
+  {{ id: 2, live_played: false, from_track: "Podval Capella - Risk" }},
+];
+console.log(JSON.stringify({{
+  shown: P.visibleBestPracticeItems(items, true).map((x) => x.id),
+  all: P.visibleBestPracticeItems(items, false).map((x) => x.id),
+  hidden: P.bestPracticeHiddenCount(items, true),
+  hiddenOff: P.bestPracticeHiddenCount(items, false),
+}}));
+"""
+        )
+        self.assertEqual(out["shown"], [2])
+        self.assertEqual(out["all"], [1, 2])
+        self.assertEqual(out["hidden"], 1)
+        self.assertEqual(out["hiddenOff"], 0)
+
+
 class CuePrerollHelperTests(unittest.TestCase):
     def test_preroll_is_four_beats_when_bpm_known(self) -> None:
         out = _node(
@@ -175,7 +198,8 @@ console.log(JSON.stringify({{
         self.assertNotIn("vocal", purple)
         self.assertIn("drum", yellow)
         self.assertIn("vocal", yellow)
-        self.assertIn("vocal", orange)
+        self.assertIn("voice", orange)  # Kirill's scheme: orange = voice, no drums
+        self.assertIn("no drums", orange)
         self.assertTrue(out["unknown"])
 
 

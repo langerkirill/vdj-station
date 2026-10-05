@@ -52,21 +52,29 @@ class GridPreflightTests(unittest.TestCase):
         self.assertTrue(result["needs_align"])
         self.assertEqual(result["status"], "fixable")
 
-    def test_double_time_warns(self):
+    def test_house_fork_does_not_nag_double_time_at_140(self) -> None:
+        # HOUSE FORK: no Halve-BPM / double-time warning band.
         result = gp.preflight_from_cues(
             _cues(bpm=140.0, has_beatgrid=True, beatgrid_pos=0.05)
         )
         self.assertTrue(result["can_autocue"])
-        self.assertEqual(result["status"], "warn")
-        self.assertTrue(any("double-time" in w.lower() for w in result["warnings"]))
+        self.assertFalse(any("double-time" in w.lower() for w in result["warnings"]))
+        self.assertFalse(result.get("suggest_halve_bpm"))
 
-    def test_slow_zouk_57_bpm_can_autocue(self):
+    def test_house_fork_120_bpm_is_native_tempo(self) -> None:
+        result = gp.preflight_from_cues(
+            _cues(bpm=120.0, has_beatgrid=True, beatgrid_pos=0.1, scan_phase=0.1)
+        )
+        self.assertTrue(result["can_autocue"])
+        self.assertFalse(result.get("suggest_halve_bpm"))
+        self.assertEqual(result["status"], "ok")
+
+    def test_house_fork_57_bpm_is_not_usable(self) -> None:
+        # Slow zouk BPMs are out of range for the house profile.
         result = gp.preflight_from_cues(
             _cues(bpm=57.0, has_beatgrid=True, beatgrid_pos=0.1, scan_phase=0.1)
         )
-        self.assertTrue(result["can_autocue"])
-        self.assertNotEqual(result["status"], "blocked")
-        self.assertNotEqual(result["label"], "No usable BPM")
+        self.assertFalse(result["can_autocue"])
 
     def test_ok_grid(self):
         result = gp.preflight_from_cues(

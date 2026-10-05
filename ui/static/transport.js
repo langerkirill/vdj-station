@@ -283,13 +283,16 @@
     return { bpm, key };
   }
 
-  const CUE_COLOR_MEANINGS = {
-    blue: "Melodic — no drums or vocals",
-    green: "Melodic + drums — no vocals",
-    purple: "Drums / percussion only",
-    yellow: "Drums + vocals",
-    orange: "Vocals with no drums",
-  };
+  /** Kirill's ONE color scheme for loops and cues. The legend, selects, tooltips and popovers all read this. */
+  const CUE_COLOR_SCHEME = [
+    { id: "blue", name: "Blue", meaning: "Melodic, no drums" },
+    { id: "lightblue", name: "Light blue", meaning: "Your own marking (no fixed sound meaning)" },
+    { id: "green", name: "Green", meaning: "Melodic + drums" },
+    { id: "purple", name: "Purple", meaning: "Drums only" },
+    { id: "yellow", name: "Yellow", meaning: "Drums + vocals" },
+    { id: "orange", name: "Orange", meaning: "Voice, no drums" },
+  ];
+  const CUE_COLOR_MEANINGS = Object.fromEntries(CUE_COLOR_SCHEME.map((c) => [c.id, c.meaning]));
 
   /**
    * Musical meaning for this app's cue color language.
@@ -319,5 +322,6 @@
     keyToCamelot,
     crateBpmKeyLabels,
     cueColorMeaning,
+    CUE_COLOR_SCHEME,
   };
 });

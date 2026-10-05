@@ -113,12 +113,12 @@ class PajamathonSetSyncTests(unittest.TestCase):
             paths = self._tree(Path(tmp))
             add_file = paths["paj"] / "01 - Galimatias - South.flac"
             set_file = paths["sets"] / "062. Galimatias - South.flac"
-            lib = paths["zouk"] / "01 - Galimatias - South.flac"
-            for file in (add_file, set_file, lib):
+            keep_lib = paths["zouk"] / "01 - Unrelated Keep.flac"
+            for file in (add_file, set_file, keep_lib):
                 file.write_bytes(b"audio")
             stems = Path(f"{set_file}.vdjstems")
             stems.write_bytes(b"stems")
-            _write_db(paths["db"], [set_file, lib])
+            _write_db(paths["db"], [set_file, keep_lib])
             paths["m3u"].write_text(
                 "#EXTM3U\n"
                 "#EXTINF:-1,Galimatias - South\n"
@@ -158,10 +158,10 @@ class PajamathonSetSyncTests(unittest.TestCase):
             self.assertEqual(result["removed_count"], 1)
             self.assertFalse(set_file.exists())
             self.assertFalse(stems.exists())
-            self.assertTrue(lib.is_file())
+            self.assertTrue(keep_lib.is_file())
             db_text = paths["db"].read_text(encoding="utf-8")
             self.assertNotIn(str(set_file), db_text)
-            self.assertIn(str(lib), db_text)
+            self.assertIn(str(keep_lib), db_text)
             m3u = paths["m3u"].read_text(encoding="utf-8")
             self.assertNotIn(str(set_file), m3u)
             self.assertIn("001. Keep.flac", m3u)
@@ -282,7 +282,8 @@ class PajamathonSetSyncTests(unittest.TestCase):
             self.assertTrue(lib.is_file())
             self.assertIn("01 - Amaria - Moon.flac", result["skipped_promoted"])
 
-    def test_explicit_delete_removes_set_even_if_library_copy_exists(self) -> None:
+    def test_explicit_delete_keeps_set_if_library_copy_exists(self) -> None:
+        """Add To Set + Copy Cues + Delete from Add Cues is inbox cleanup."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._tree(Path(tmp))
             set_file = paths["sets"] / "062. Galimatias - South.flac"
@@ -302,9 +303,101 @@ class PajamathonSetSyncTests(unittest.TestCase):
                 dry_run=False,
                 to_trash=False,
             )
-            self.assertEqual(result["removed_count"], 1)
-            self.assertFalse(set_file.exists())
+            self.assertEqual(result["removed_count"], 0)
+            self.assertTrue(set_file.is_file())
             self.assertTrue(lib.is_file())
+            self.assertIn("01 - Galimatias - South.flac", result["skipped_promoted"])
+
+    def test_inbox_cleanup_keeps_set_copy_without_library(self) -> None:
+        """Delete from Add Cues after Add To Set must not trash the live set file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._tree(Path(tmp))
+            inbox_name = "Linker - Magic Garden (NeoZouk) - 8744.mp3"
+            set_file = paths["sets"] / "462. Linker - Magic Garden (NeoZouk) - 8744.mp3"
+            set_file.write_bytes(b"set")
+            stems = Path(f"{set_file}.vdjstems")
+            stems.write_bytes(b"stems")
+            paths["snapshot"].write_text(
+                json.dumps({"files": [{"name": inbox_name}]}),
+                encoding="utf-8",
+            )
+            result = sync_pajamathon_set_deletes(
+                add_cues_root=paths["add"],
+                sets_root=paths["sets"].parent,
+                snapshot_path=paths["snapshot"],
+                extra_deleted=[inbox_name],
+                ready_root=paths["ready"],
+                library_roots=[paths["zouk"].parent],
+                cues_sorted_root=Path(tmp) / "Cues Sorted",
+                database_path=paths["db"],
+                playlist_paths=[],
+                dry_run=False,
+                to_trash=False,
+                propagate_to_set=False,
+            )
+            self.assertEqual(result["removed_count"], 0)
+            self.assertTrue(set_file.is_file())
+            self.assertTrue(stems.is_file())
+            self.assertIn(inbox_name, result["skipped_inbox_cleanup"])
+            snap = json.loads(paths["snapshot"].read_text(encoding="utf-8"))
+            self.assertNotIn(inbox_name, [item.get("name") for item in snap.get("files") or []])
+
+            second = sync_pajamathon_set_deletes(
+                add_cues_root=paths["add"],
+                sets_root=paths["sets"].parent,
+                snapshot_path=paths["snapshot"],
+                extra_deleted=[],
+                ready_root=paths["ready"],
+                library_roots=[paths["zouk"].parent],
+                cues_sorted_root=Path(tmp) / "Cues Sorted",
+                database_path=paths["db"],
+                playlist_paths=[],
+                dry_run=False,
+                to_trash=False,
+                propagate_to_set=True,
+            )
+            self.assertEqual(second["removed_count"], 0)
+            self.assertTrue(set_file.is_file())
+            self.assertTrue(stems.is_file())
+
+    def test_inbox_cleanup_still_propagates_other_snapshot_deletes(self) -> None:
+        """UI inbox skip is only for the deleted basename, not pending Finder diffs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._tree(Path(tmp))
+            keep_name = "Linker - Magic Garden (NeoZouk) - 8744.mp3"
+            drop_name = "01 - Galimatias - South.flac"
+            keep_set = paths["sets"] / "462. Linker - Magic Garden (NeoZouk) - 8744.mp3"
+            drop_set = paths["sets"] / "062. Galimatias - South.flac"
+            keep_set.write_bytes(b"keep")
+            drop_set.write_bytes(b"drop")
+            paths["snapshot"].write_text(
+                json.dumps({"files": [{"name": keep_name}, {"name": drop_name}]}),
+                encoding="utf-8",
+            )
+            with patch(
+                "sorter.pajamathon_set_sync.is_virtualdj_running", return_value=False
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ):
+                result = sync_pajamathon_set_deletes(
+                    add_cues_root=paths["add"],
+                    sets_root=paths["sets"].parent,
+                    snapshot_path=paths["snapshot"],
+                    extra_deleted=[keep_name],
+                    ready_root=paths["ready"],
+                    library_roots=[paths["zouk"].parent],
+                    cues_sorted_root=Path(tmp) / "Cues Sorted",
+                    database_path=paths["db"],
+                    playlist_paths=[],
+                    dry_run=False,
+                    to_trash=False,
+                    propagate_to_set=False,
+                )
+            self.assertEqual(result["removed_count"], 1)
+            self.assertTrue(keep_set.is_file())
+            self.assertFalse(drop_set.exists())
+            self.assertIn(keep_name, result["skipped_inbox_cleanup"])
+            self.assertEqual(Path(result["removed"][0]["set_path"]).name, drop_set.name)
 
     def test_missing_snapshot_writes_snapshot_and_deletes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -14,6 +14,7 @@ SHIPPED_JS = (
     "waveform.js",
     "practice.js",
     "assemble.js",
+    "stems.js",
     "app.js",
 )
 

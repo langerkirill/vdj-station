@@ -189,14 +189,20 @@ class AutomaticMusicCuer(
         except Exception:
             try:
                 result = subprocess.run(
-                    ["pgrep", "-x", "VirtualDJ"],
+                    ["ps", "-axo", "pid=,comm="],
                     capture_output=True,
                     text=True,
                     check=False,
                 )
             except Exception:
                 return False
-            return result.returncode == 0 and bool(result.stdout.strip())
+            for raw in result.stdout.splitlines():
+                parts = raw.strip().split(None, 1)
+                if len(parts) == 2 and (
+                    parts[1] == "VirtualDJ" or parts[1].endswith("/Contents/MacOS/VirtualDJ")
+                ):
+                    return True
+            return False
 
     @staticmethod
     def _is_retryable_error(error: Exception, terms=RETRYABLE_API_ERROR_TERMS) -> bool:

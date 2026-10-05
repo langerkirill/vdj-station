@@ -239,13 +239,13 @@ def crate_lane(track: dict[str, Any]) -> str:
     if blob.strip().startswith("pop") or "/pop/" in blob or blob.endswith(" pop"):
         return "pop"
     fam = genre_family(track.get("genre"), track.get("vibe"))
-    if fam == "rnb_soul_zouk":
+    if fam == "vocal_soul":
         return "rnb"
-    if fam == "house_dance":
+    if fam == "house":
         return "trancy"
     if fam == "hiphop":
         return "hiphop"
-    if fam == "psy_tribal_world":
+    if fam == "psy_world":
         return "tribal"
     return "other"
 

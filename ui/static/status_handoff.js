@@ -49,7 +49,12 @@
       .join(" + ");
     const bits = [];
     if (dest) bits.push(dest);
-    bits.push("Cues Sorted");
+    // House build: the House library is itself the cued destination (no second archive).
+    const houseOnly =
+      dests.length > 0 &&
+      dests.every((d) => d && d.library === "House") &&
+      !(result && result.cues_sorted_path);
+    bits.push(houseOnly ? "House (cued)" : "Cues Sorted");
     if (result && result.database_updated) bits.push("cues kept");
     bits.push("set stayed");
     return {

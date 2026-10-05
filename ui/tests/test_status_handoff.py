@@ -51,7 +51,7 @@ class StatusHandoffTests(unittest.TestCase):
         compose_p = app.index("composePromoteSuccessHandoff")
         self.assertLess(promo, compose_p, "promote must set status after loadTracks")
         # Sort: same pattern
-        sort_load = app.rfind("await loadTracks({ skipStatus: true })")
+        sort_load = app.rfind("await loadTracks({ skipStatus: true, keepPath: track.path })")
         compose_s = app.index("composeSortSuccessHandoff")
         self.assertLess(sort_load, compose_s, "sort must set status after loadTracks")
 

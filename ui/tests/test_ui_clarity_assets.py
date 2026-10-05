@@ -67,6 +67,45 @@ class UiClarityAssetsTests(unittest.TestCase):
         self.assertIn("stopStagePlayback", self.app_js)
         self.assertIn("const RECS_NOW_STAMP_MS = 250;", self.app_js)
 
+    def test_transport_keys_share_cassette_height(self) -> None:
+        self.assertIn("html[data-world=\"pool-deck\"] .transport-btn", self.css)
+        self.assertIn("html[data-world=\"pool-deck\"] .transport-play", self.css)
+        self.assertRegex(
+            self.css,
+            r'html\[data-world="pool-deck"\] \.transport-btn \{[^}]*height: 32px',
+        )
+        self.assertRegex(
+            self.css,
+            r'html\[data-world="pool-deck"\] \.transport-play,[\s\S]*?height: 32px !important',
+        )
+        self.assertNotIn("width: 56px !important", self.css)
+        self.assertNotIn(".transport-play {\n  width: 48px !important;\n  height: 48px !important;", self.css)
+
+    def test_autocue_skip_tells_operator_to_make_stems(self) -> None:
+        self.assertIn("Go make stems in VirtualDJ first", self.app_js)
+        self.assertIn("fix beatgrid first", self.app_js)
+        self.assertIn("has_stems", self.app_js)
+
+    def test_practice_day_mode_uses_linen_mix_keys(self) -> None:
+        self.assertIn(
+            'html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row',
+            self.css,
+        )
+        self.assertIn("--panel-2: #efe4d4", self.css)
+        self.assertIn("body.mode-practice .score-pill.good", self.css)
+
+    def test_best_set_can_hide_live_played_songs(self) -> None:
+        self.assertIn('id="bestSetHidePlayedBtn"', self.html)
+        self.assertIn("Hide played", self.html)
+        self.assertIn("practiceBestHidePlayed", self.js)
+        self.assertIn("visibleBestPracticeItems", self.js)
+        self.assertIn("toggleBestSetHidePlayed", self.app_js)
+        self.assertIn("live_played_error", self.app_js)
+        self.assertIn("await loadBestPracticeScores()", self.app_js)
+        self.assertIn("hide_live_played", self.app_js)
+        self.assertIn("/api/practice/best", self.app_js)
+        self.assertIn("best-set-hide-played", self.css)
+
     def test_waveform_cue_drag_and_place(self) -> None:
         self.assertIn('id="placeCueBtn"', self.html)
         self.assertIn('id="placeLoopBtn"', self.html)
@@ -122,6 +161,7 @@ class UiClarityAssetsTests(unittest.TestCase):
             "best_set",
             "recs",
             "assemble",
+            "stems",
         ):
             self.assertIn(f'data-mode="{mode}"', self.html)
         self.assertIn("Add Cues", self.html)
@@ -130,6 +170,7 @@ class UiClarityAssetsTests(unittest.TestCase):
         self.assertIn("Assemble", self.html)
         self.assertIn("assemblePanel", self.html)
         self.assertIn("Assemble Pajamathon", self.html)
+        self.assertIn("stemsPanel", self.html)
 
     def test_add_cues_retried_filters_are_visible(self) -> None:
         self.assertIn('data-filter="retried_cues"', self.html)
@@ -171,21 +212,21 @@ class UiClarityAssetsTests(unittest.TestCase):
         self.assertIn("Copy cues to all", self.js)
         self.assertIn("placement-copy-cues-all-btn", self.js)
         self.assertIn("placement-copy-cues-all-btn", self.css)
-        self.assertIn("/api/add-to-set", self.js)
-        self.assertIn("function addTrackToPajamathon", self.js)
-        self.assertIn("Add to Pajamathon", self.js)
+        # House fork: the 'Add to Pajamathon' button and its wiring are GONE from the UI.
+        self.assertNotIn("/api/add-to-set", self.js)
+        self.assertNotIn("addTrackToPajamathon", self.js)
+        self.assertNotIn("Add to Pajamathon", self.js)
+        self.assertNotIn("placement-add-set-btn", self.js)
+        self.assertNotIn("Add to Pajamathon", self.html)
         self.assertIn("Delete from folder", self.js)
         self.assertIn("allowDelete: true", self.js)
         self.assertNotIn("allowDelete: false", self.js)
-        self.assertIn("placement-add-set-btn", self.js)
-        self.assertIn('p.root_name === "Zouk"', self.js)
         self.assertIn('p.root_name === "House"', self.js)
         self.assertIn("function loadTrackPlacements", self.js)
         self.assertIn("function applyExistingSetPlacement", self.js)
         self.assertIn("function mergeLoadedPlacements", self.js)
         self.assertIn("loadTrackPlacements(selected)", self.js)
         self.assertIn("Looking up House / Zouk / Pajamathon", self.placements_js)
-        self.assertIn("already_exists", self.js)
         self.assertIn("placementsLoaded", self.js)
         self.assertIn("/api/track-placements", self.js)
 
@@ -214,7 +255,7 @@ class UiClarityAssetsTests(unittest.TestCase):
         self.assertIn("Delete from Pajamathon", self.js)
         self.assertIn("/api/delete-add-cues", self.js)
         self.assertIn("kept_hardlinks", self.js)
-        self.assertIn("Cue in set · confirm a lane to sort", self.js)
+        self.assertIn("Cue in set · pick a House folder to sort", self.js)
         self.assertIn("Sets/${track.relative_path", self.js)
         self.assertIn("Sets/Pajamathon — Approve after you listen", self.js)
         self.assertIn("Next Pajamathon track", self.js)
@@ -227,11 +268,15 @@ class UiClarityAssetsTests(unittest.TestCase):
         self.assertIn('id="filterReadyBtn"', self.html)
         self.assertIn("function syncReadinessFilterLabels", self.js)
         self.assertIn('readyBtn.textContent = "Ready"', self.js)
-        self.assertIn('const UI_BUILD = "20260829-recs-event-plays"', self.js)
-        self.assertIn("20260829-recs-event-plays", self.html)
+        self.assertIn('const UI_BUILD = "20261004-house-sauna-fest8"', self.js)
+        self.assertIn("20261004-house-sauna-fest8", self.html)
+        self.assertIn("The Pajamathon set copy stays.", self.js)
+        self.assertIn("The Pajamathon set copy stays.", self.html)
+        self.assertNotIn("Audio + stems → Trash", self.html)  # stale static banner removed
         app_py = (Path(__file__).resolve().parents[1] / "app.py").read_text(
             encoding="utf-8"
         )
+        self.assertIn("propagate_to_set=False", app_py)
         js_build = re.search(r'const UI_BUILD = "([^"]+)"', self.js)
         py_build = re.search(r'^UI_BUILD = "([^"]+)"', app_py, re.M)
         self.assertTrue(js_build and py_build)
@@ -391,6 +436,7 @@ class UiClarityAssetsTests(unittest.TestCase):
         self.assertRegex(self.html, r"/static/waveform\.js(\?[^\"']*)?")
         self.assertRegex(self.html, r"/static/practice\.js(\?[^\"']*)?")
         self.assertRegex(self.html, r"/static/assemble\.js(\?[^\"']*)?")
+        self.assertRegex(self.html, r"/static/stems\.js(\?[^\"']*)?")
         self.assertRegex(self.html, r"/static/status_handoff\.js(\?[^\"']*)?")
         # not an empty shell
         self.assertGreater(len(self.html), 2000)

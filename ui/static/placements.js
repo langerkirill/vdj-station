@@ -189,7 +189,7 @@
         ? cuedN > 0
           ? "This song already exists under House/Zouk, Cues Sorted, and/or Sets/Pajamathon with VDJ cues. Approving still moves this Add Cues copy to Ready — Copy cues pushes markers onto that copy; Delete from folder removes a library/archive file only."
           : "This song already exists under House/Zouk, Cues Sorted, and/or Sets/Pajamathon, but those copies are not cued in VirtualDJ yet. Copy cues writes this track's markers onto that file."
-        : "Copy cues writes this Ready track's markers onto the existing House/Zouk/Cues Sorted/Pajamathon file without moving audio. Delete from folder Trashes a duplicate library copy. Add to Pajamathon copies this Ready file into Sets/Pajamathon 2026.";
+        : "Copy cues writes this Ready track's markers onto the existing House/Zouk/Cues Sorted/Pajamathon file without moving audio. Delete from folder Trashes a duplicate library copy.";
     } else if (loading) {
       state = "loading";
       title = "Looking up library copies…";
@@ -202,7 +202,7 @@
       state = "missing";
       title = "Not in Pajamathon";
       note =
-        "No matching Sets/Pajamathon file. Add to Pajamathon copies this track into the event crate and clones its VirtualDJ cues.";
+        "No matching Sets/Pajamathon file.";
     }
 
     return {
@@ -270,7 +270,7 @@
    */
   function cueCopyDestName(dest) {
     const root = String((dest && dest.root) || "");
-    if (/cues sorted/i.test(root)) return "Archive";
+    if (/cues sorted/i.test(root) || /\/Music\/House$/.test(root)) return "Archive";
     if (/pajamathon/i.test(root) || /^sets$/i.test(root)) return "Pajamathon";
     return root || (dest && dest.relative) || "copy";
   }

@@ -149,6 +149,26 @@
     return s.t0 + frac * (s.t1 - s.t0);
   }
 
+  /**
+   * @param {Array<{ live_played?: boolean }> | null | undefined} items
+   * @param {boolean} hidePlayed
+   */
+  function visibleBestPracticeItems(items, hidePlayed) {
+    const list = Array.isArray(items) ? items : [];
+    if (!hidePlayed) return list;
+    return list.filter((it) => !it.live_played);
+  }
+
+  /**
+   * @param {Array<{ live_played?: boolean }> | null | undefined} items
+   * @param {boolean} hidePlayed
+   */
+  function bestPracticeHiddenCount(items, hidePlayed) {
+    const list = Array.isArray(items) ? items : [];
+    if (!hidePlayed) return 0;
+    return list.filter((it) => it.live_played).length;
+  }
+
   return {
     practiceTransitions,
     practiceDuration,
@@ -157,5 +177,7 @@
     practiceMapLayout,
     practiceTimeToX,
     practiceXToTime,
+    visibleBestPracticeItems,
+    bestPracticeHiddenCount,
   };
 });

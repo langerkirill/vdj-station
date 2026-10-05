@@ -756,6 +756,8 @@ class PlaylistAssembleHelpersTests(unittest.TestCase):
         self.assertEqual(slug_event("Pajamathon 2026"), "pajamathon-2026")
         self.assertEqual(event_folder_name("Pajamathon"), "Pajamathon 2026")
         self.assertEqual(event_folder_name("Pajamathon 2026"), "Pajamathon 2026")
+        self.assertNotIn("/", event_folder_name("../Zouk/Energy"))
+        self.assertNotIn("..", event_folder_name("../Zouk/Energy"))
 
     def test_materialize_set_directory_writes_real_files(self):
         import tempfile

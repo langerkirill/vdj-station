@@ -1,15 +1,35 @@
 # VDJ Station
 
-Local VirtualDJ booth: **AutoCue**, **Music Sorter**, live **Recs**, **Pajamathon assemble**, set overview, and practice mixes. Cue, confirm a lane, file the track — without losing VirtualDJ `FilePath`-linked markers.
+Local VirtualDJ booth: **AutoCue**, **Music Sorter**, live **Recs**, set overview, and practice mixes. Cue, confirm a lane, file the track — without losing VirtualDJ `FilePath`-linked markers.
+
+**`main` is House / Sauna Fest oriented** (live Music Sorter on port **8788**). Day-to-day booth work is organic / melodic / deep house: copy-sort into `House/…`, optional mirror into `Sets/Sauna Fest/…`, Sauna Fest House Add Cues queue, BPM/key tooling, and write-safe `database.xml` edits.
+
+| Branch | What it is |
+|--------|------------|
+| **`main`** (default) | House + Sauna Fest Music Sorter. Live Mac tree: `~/src/vdj-station-house` on **8788**. |
+| **`zouk`** | Zouk-era station (Pajamathon assemble, Zouk emotion folders, port **8787** workflow). Preserved from the previous `main` tip. |
+
+### Live build id (keep updated on every ship)
+
+| Field | Current value |
+|-------|----------------|
+| **UI_BUILD** | `20261005-house-sauna-fest11` |
+| **Short name** | fest11 |
+| **Where it lives** | `ui/app.py` → `UI_BUILD = "…"` (served on `/api/health` as `ui_build`) |
+| **Policy** | Bump this stamp on every live 8788 ship (festN → festN+1) and update this README table in the same commit. |
+
+Historical note: GitHub repo `langerkirill/vdj-automatic-cuer` redirects to **`langerkirill/vdj-station`** (same repo). Clone URL below is the source of truth.
 
 This used to be “just” an AutoCue CLI. The station is the day-to-day product; the CLI is still there for batch jobs.
 
 | Interface | What it’s for |
 |-----------|----------------|
-| **Music Sorter UI** (`ui/`) | Add Cues → lane + sort, Set Overview, Recs, Assemble, Practice, Best for set |
+| **Music Sorter UI** (`ui/`) | House/Sauna Fest: Add Cues → copy-sort, Recs, Set Overview, Practice |
 | **CLI** (`automatic_music_cuer_gemini.py`) | Batch / scripted AutoCue on files or folders |
 
 Both share the same surgical `database.xml` writer (`vdj_database_safety.py`) so FilePath moves and cue edits stay CRLF-safe on large libraries.
+
+House-specific runbook: `ui/README_HOUSE.md` (profile, read-only vs write mode, Sauna Fest copy-sort). Zouk-era UI docs remain accurate on the `zouk` branch.
 
 ## Walkthrough
 
@@ -74,7 +94,7 @@ Filter to cued tracks that still need a lane or folder. Batch **Add cues** / Paj
 ## Quick Start
 
 ```bash
-# 1. Clone the repository
+# 1. Clone the repository (source of truth; vdj-automatic-cuer redirects here)
 git clone https://github.com/langerkirill/vdj-station.git
 cd vdj-station
 
@@ -87,9 +107,12 @@ source venv/bin/activate
 # 4a. CLI — analyze a track
 python3 automatic_music_cuer_gemini.py "path/to/song.mp3"
 
-# 4b. UI — VDJ Station / Music Sorter
-./ui/run.sh
-# open http://127.0.0.1:8787
+# 4b. UI — House / Sauna Fest Music Sorter (main)
+MUSIC_SORTER_PROFILE=house ./ui/start_8788_write.sh   # or start_8788.sh for read-only
+# open http://127.0.0.1:8788
+# Live build id must match UI_BUILD in ui/app.py (currently fest11 / 20261005-house-sauna-fest11)
+
+# 4c. Zouk-era station (historic): git checkout zouk && ./ui/run.sh → http://127.0.0.1:8787
 ```
 
 The setup script installs CLI + UI dependencies and helps you set up your API key.

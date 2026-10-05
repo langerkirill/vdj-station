@@ -18,6 +18,7 @@ from .config import CUES_ROOT, LIBRARIES, VDJ_DATABASE, assert_existing_audio
 from .ml_training import schedule_training_drop, schedule_training_update
 from .relocate import is_virtualdj_running, summarize_cues
 from .db_lock import vdj_db_write
+from .safe_write import safe_rewrite_song
 
 ensure_autocue_on_path()
 
@@ -26,11 +27,11 @@ from vdj_database_safety import (  # noqa: E402
     _find_song_span,
     _is_manual_cue_or_loop_poi,
     _poi_attr,
+    extract_manual_pois_from_song_xml,
     format_vdj_poi_line,
     normalize_database_path,
     parse_manual_poi_tag,
     read_vdj_database_text,
-    rewrite_song_xml_in_database,
 )
 
 POS_TOLERANCE = 0.02  # seconds
@@ -162,6 +163,7 @@ def remove_manual_poi_from_song_xml(
                 "num": parsed.get("num"),
                 "size": _poi_attr(tag, "Size"),
                 "slot": _poi_attr(tag, "Slot"),
+                "color": parsed.get("color"),
                 "raw": tag.strip(),
             }
             return ""
@@ -189,6 +191,7 @@ MAX_LOOP_BEATS = 256.0
 # AutoCue / Music Sorter palette (ARGB ints as stored in database.xml).
 VDJ_CUE_COLORS: dict[str, str] = {
     "blue": "4278190335",
+    "lightblue": "4278255615",
     "green": "4278255360",
     "purple": "4288020735",
     "yellow": "4294967040",
@@ -215,7 +218,7 @@ def normalize_cue_color(color: str) -> tuple[str, str]:
     if raw.isdigit():
         return VDJ_CUE_COLOR_NAMES.get(raw, "unknown"), raw
     raise ValueError(
-        f"Unknown color {color!r}; use blue/green/purple/yellow/orange"
+        f"Unknown color {color!r}; use blue/lightblue/green/purple/yellow/orange"
     )
 
 
@@ -225,6 +228,27 @@ def _format_loop_size(beats: float) -> str:
         return f"{beats:.1f}" if beats < 1000 else f"{beats:.0f}"
     s = f"{beats:.6f}".rstrip("0").rstrip(".")
     return s
+
+
+_SONG_LEN_RE = re.compile(r'<Infos\b[^>]*\bSongLength\s*=\s*"([0-9.]+)"', re.IGNORECASE)
+_SCAN_BPM_RE = re.compile(r'<Scan\b[^>]*\bBpm\s*=\s*"([0-9.]+)"', re.IGNORECASE)
+
+
+def _loop_room_beats(song_xml: str, start: float) -> float | None:
+    """Whole quarter-beats that fit between ``start`` and the end of the song (None if unknown)."""
+    m_len = _SONG_LEN_RE.search(song_xml)
+    m_bpm = _SCAN_BPM_RE.search(song_xml)
+    if not m_len or not m_bpm:
+        return None
+    try:
+        length = float(m_len.group(1))
+        spb = float(m_bpm.group(1))  # VDJ stores seconds per beat
+    except ValueError:
+        return None
+    if length <= 0 or spb <= 0:
+        return None
+    room = (length - start) / spb
+    return max(0.0, int(room * 4) / 4.0)
 
 
 def scale_loop_size_in_song_xml(
@@ -282,6 +306,12 @@ def scale_loop_size_in_song_xml(
             # Prefer clean whole-beat sizes when very close (e.g. 15.999 → 16).
             if abs(new_beats - round(new_beats)) < 0.05:
                 new_beats = float(round(new_beats))
+            # A loop may not run past the end of the song: clamp to the room that is left.
+            clamped = False
+            room = _loop_room_beats(song_xml, float((parse_manual_poi_tag(tag) or {}).get("position") or 0.0))
+            if room is not None and new_beats > room + 1e-6:
+                new_beats = max(MIN_LOOP_BEATS, room)
+                clamped = True
             new_s = _format_loop_size(new_beats)
             if not _SIZE_ATTR_RE.search(tag):
                 return tag
@@ -300,6 +330,7 @@ def scale_loop_size_in_song_xml(
                 "beats_before": old_beats,
                 "beats_after": new_beats,
                 "factor": factor,
+                "clamped_to_song_end": clamped,
             }
             return new_tag
 
@@ -391,7 +422,18 @@ def scale_loop_point(
         shutil.copy2(db, backup)
 
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=True)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=True
+        )
+    if new_song != content[start:end] and change.get("beats_after") is not None:
+        want_beats = float(change["beats_after"])
+        confirm_readback(
+            audio, db, source_path, "Loop resize",
+            lambda ms: any(
+                m.get("kind") == "loop" and abs(float(m.get("length_beats") or 0) - want_beats) < 0.01
+                for m in ms
+            ),
+        )
     after = summarize_cues(audio, db)
     _schedule_ml_after_cue_change(audio, after)
 
@@ -579,7 +621,9 @@ def fill_missing_poi_colors(
         backup = f"{db}.backup.{ts}.music-sorter-fill-color"
         shutil.copy2(db, backup)
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=False)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=False
+        )
     return {
         "ok": True,
         "dry_run": False,
@@ -651,7 +695,16 @@ def set_poi_color(
         shutil.copy2(db, backup)
 
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=False)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=False
+        )
+    if new_song != content[start:end]:
+        want = normalize_cue_color(color)[1]
+        n_before = sum(1 for m in _all_markers(content[start:end]) if str(m.get("color")) == str(want))
+        confirm_readback(
+            audio, db, source_path, "Color change",
+            lambda ms: sum(1 for m in ms if str(m.get("color")) == str(want)) > n_before,
+        )
 
     return {
         "ok": True,
@@ -666,12 +719,57 @@ def set_poi_color(
 
 
 def _format_poi_pos(seconds: float) -> str:
+    """VDJ writes Pos with 6 decimals."""
     if seconds < 0:
         seconds = 0.0
-    s = f"{seconds:.6f}".rstrip("0").rstrip(".")
-    if "." not in s:
-        s = f"{seconds:.1f}"
-    return s
+    return f"{seconds:.6f}"
+
+
+
+def _all_markers(song_xml: str) -> list:
+    pois = extract_manual_pois_from_song_xml(song_xml)
+    return list(pois["cues"]) + list(pois["loops"])
+
+
+def confirm_readback(audio, db, source_path, what: str, predicate) -> None:
+    """Re-read database.xml AFTER the write; raise unless the change is really there.
+
+    A save is never reported as done on the strength of the write call alone."""
+    content = read_vdj_database_text(db)
+    _path, start, end = _resolve_song_span(content, audio, source_path)
+    pois = extract_manual_pois_from_song_xml(content[start:end])
+    markers = list(pois["cues"]) + list(pois["loops"])
+    if not predicate(markers):
+        raise RuntimeError(
+            f"{what} was NOT confirmed: database.xml does not show the change after saving, "
+            "so nothing is reported as saved. Reload the track and try again."
+        )
+
+
+def count_markers(song_xml: str) -> int:
+    pois = extract_manual_pois_from_song_xml(song_xml)
+    return len(pois["cues"]) + len(pois["loops"])
+
+
+_POS_FULL_ATTR_RE = re.compile(r'\s+Pos\s*=\s*"[^"]*"', re.IGNORECASE)
+
+
+def _tag_with_pos(tag: str, new_pos: float) -> str:
+    """Return ``tag`` with Pos set to ``new_pos`` the way VDJ writes it.
+
+    VDJ DROPS the Pos attribute when it is 0, so a marker at 0:00 has no Pos at all:
+    moving it away from 0 must ADD ``Pos`` (after Name, before Num), and moving a marker
+    to 0 removes it.
+    """
+    if abs(float(new_pos)) < 5e-7:
+        return _POS_FULL_ATTR_RE.sub("", tag, count=1)
+    new_s = _format_poi_pos(float(new_pos))
+    if _POS_ATTR_RE.search(tag):
+        return _POS_ATTR_RE.sub(lambda m: f"{m.group(1)}{new_s}{m.group(3)}", tag, count=1)
+    m = re.search(r'(<Poi\b(?:\s+Name\s*=\s*"[^"]*")?)', tag, re.IGNORECASE)
+    if not m:
+        return tag
+    return tag[: m.end()] + f' Pos="{new_s}"' + tag[m.end():]
 
 
 def _existing_cue_near(
@@ -827,7 +925,9 @@ def set_cue_jumpable(
         backup = f"{db}.backup.{ts}.music-sorter-jumpable"
         shutil.copy2(db, backup)
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=False)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=False
+        )
     after = summarize_cues(audio, db)
     _schedule_ml_after_cue_change(audio, after)
     return {
@@ -939,7 +1039,11 @@ def add_cue_point(
         new_song, change = add_cue_poi_in_song_xml(
             content[start:end], pos=float(pos), name=name, color=color
         )
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=True)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=True
+        )
+    _nb = count_markers(content[start:end])
+    confirm_readback(audio, db, source_path, "Adding the cue", lambda ms: len(ms) == _nb + 1)
     after = summarize_cues(audio, db)
     _schedule_ml_after_cue_change(audio, after)
 
@@ -1105,7 +1209,11 @@ def add_loop_point(
         new_song, change = add_loop_poi_in_song_xml(
             content[start:end], pos=float(pos), name=name, color=color, beats=beats
         )
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=True)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=True
+        )
+    _nb = count_markers(content[start:end])
+    confirm_readback(audio, db, source_path, "Adding the loop", lambda ms: len(ms) == _nb + 1)
     after = summarize_cues(audio, db)
     _schedule_ml_after_cue_change(audio, after)
 
@@ -1164,12 +1272,10 @@ def set_poi_position_in_song_xml(
                 slot=try_slot,
             ):
                 return tag
-            if not _POS_ATTR_RE.search(tag):
+            old_pos = _poi_attr(tag, "Pos")  # None for a marker at 0:00 (VDJ omits Pos then)
+            new_tag = _tag_with_pos(tag, float(new_pos))
+            if new_tag == tag:
                 return tag
-            old_pos = _poi_attr(tag, "Pos")
-            new_tag = _POS_ATTR_RE.sub(
-                lambda m: f"{m.group(1)}{new_s}{m.group(3)}", tag, count=1
-            )
             parsed = parse_manual_poi_tag(tag) or {}
             changed = {
                 "kind": kind,
@@ -1177,7 +1283,7 @@ def set_poi_position_in_song_xml(
                 "num": parsed.get("num"),
                 "slot": _poi_attr(tag, "Slot"),
                 "size": _poi_attr(tag, "Size"),
-                "pos_before": float(old_pos) if old_pos else pos,
+                "pos_before": float(old_pos) if old_pos else 0.0,
                 "pos_after": float(new_pos),
             }
             return new_tag
@@ -1253,7 +1359,14 @@ def set_poi_position(
         shutil.copy2(db, backup)
 
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=True)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=True
+        )
+    target = float(change["pos_after"])
+    confirm_readback(
+        audio, db, source_path, "Move",
+        lambda ms: any(m.get("kind") == change["kind"] and abs(float(m["position"]) - target) < 0.002 for m in ms),
+    )
     after = summarize_cues(audio, db)
     _schedule_ml_after_cue_change(audio, after)
 
@@ -1331,7 +1444,11 @@ def delete_cue_point(
         shutil.copy2(db, backup)
 
     with vdj_db_write():
-        rewrite_song_xml_in_database(db, path_in_db, new_song, validate=False)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=False
+        )
+    n_before = count_markers(content[start:end])
+    confirm_readback(audio, db, source_path, "Delete", lambda ms: len(ms) == n_before - 1)
     after = summarize_cues(audio, db)
     _schedule_ml_after_cue_change(audio, after)
     after_cues = after.cue_count
@@ -1347,4 +1464,95 @@ def delete_cue_point(
         "cue_count_after": after_cues,
         "loop_count_after": after_loops,
         "database_backup": backup,
+    }
+
+
+def restore_poi_in_song_xml(song_xml: str, raw: str) -> tuple[str, dict[str, Any]]:
+    """Put back one previously deleted manual cue/loop POI, byte-for-byte.
+
+    ``raw`` must be exactly one ``<Poi .../>`` tag that parses as a manual
+    cue/loop. Refuses if the same marker (kind+pos, and Num for cues / Slot for
+    loops) is already in the song so a double Undo can never duplicate it.
+    """
+    tag = str(raw or "").strip()
+    if (
+        not tag
+        or "\n" in tag
+        or "\r" in tag
+        or tag.count("<") != 1
+        or not _POI_LINE_RE.fullmatch(tag)
+    ):
+        raise ValueError("Not a single <Poi /> tag")
+    parsed = parse_manual_poi_tag(tag)
+    if parsed is None:
+        raise ValueError("Not a manual cue/loop marker")
+    kind = parsed["kind"]
+    pos = float(parsed["position"])
+    slot = _poi_attr(tag, "Slot")
+    for m in _POI_LINE_RE.finditer(song_xml):
+        other = parse_manual_poi_tag(m.group(0))
+        if other is None or other["kind"] != kind:
+            continue
+        if abs(float(other["position"]) - pos) > POS_TOLERANCE:
+            continue
+        if kind == "loop" and slot is not None and _poi_attr(m.group(0), "Slot") != slot:
+            continue
+        if kind == "cue" and str(other.get("num")) != str(parsed.get("num")):
+            continue
+        raise ValueError(f"A {kind} already exists at {pos:.3f}s")
+    newline = "\r\n" if "\r\n" in song_xml else "\n"
+    close_idx = song_xml.rfind("</Song>")
+    if close_idx < 0:
+        raise ValueError("Song XML is missing </Song>")
+    body = song_xml[:close_idx].rstrip(" \t")
+    if not body.endswith("\n"):
+        body += newline
+    out = body + "  " + tag + newline + song_xml[close_idx:]
+    return out, {
+        "kind": kind,
+        "name": parsed.get("name"),
+        "pos": pos,
+        "num": parsed.get("num"),
+        "slot": slot,
+        "size": _poi_attr(tag, "Size"),
+        "color": parsed.get("color"),
+    }
+
+
+def restore_poi_point(
+    source_path: str | Path,
+    *,
+    raw: str,
+    database_path: Path | None = None,
+    allow_vdj_running: bool = False,
+) -> dict[str, Any]:
+    """Undo a delete: re-insert the saved POI under the DB write lock."""
+    audio = _assert_allowed(Path(source_path))
+    db = Path(database_path) if database_path else VDJ_DATABASE
+    if not db.is_file():
+        raise FileNotFoundError(f"VDJ database not found: {db}")
+    if is_virtualdj_running() and not allow_vdj_running:
+        raise RuntimeError(
+            "VirtualDJ is running. Close it before restoring a marker, or pass "
+            "allow_vdj_running=true (not recommended)."
+        )
+    with vdj_db_write():
+        content = read_vdj_database_text(db)
+        path_in_db, start, end = _resolve_song_span(content, audio, source_path)
+        new_song, restored = restore_poi_in_song_xml(content[start:end], raw)
+        safe_rewrite_song(
+            db, path_in_db, new_song, base_song=content[start:end], validate=False
+        )
+    _nb = count_markers(content[start:end])
+    confirm_readback(audio, db, source_path, "Restore", lambda ms: len(ms) == _nb + 1)
+    after = summarize_cues(audio, db)
+    _schedule_ml_after_cue_change(audio, after)
+    return {
+        "ok": True,
+        "path": str(audio),
+        "name": audio.name,
+        "restored": restored,
+        "cues": after.to_dict(),
+        "cue_count_after": after.cue_count,
+        "loop_count_after": after.loop_count,
     }

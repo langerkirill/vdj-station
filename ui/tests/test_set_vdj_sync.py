@@ -56,7 +56,8 @@ class SetVdjSyncTests(unittest.TestCase):
             self.assertNotIn("gone.flac", text)
             self.assertIn("other.flac", text)
 
-    def test_paints_white_from_one_sibling_lane(self):
+    def test_house_fork_does_not_paint_lane_colors_from_siblings(self):
+        """HOUSE FORK: lanes/colors do not exist, so nothing is painted."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_p = Path(tmp)
             sets = tmp_p / "Sets"
@@ -87,8 +88,8 @@ class SetVdjSyncTests(unittest.TestCase):
                 # keep live file check: Path.is_file patched True for all
                 result = sync.sync_pajamathon_vdj(database_path=db, dry_run=False, paint=True)
             text = db.read_text(encoding="utf-8")
-            self.assertEqual(result["painted"], 1)
-            self.assertIn("4294941081", text)
+            self.assertEqual(result["painted"], 0)
+            self.assertNotIn("4294941081", text)
 
 
 if __name__ == "__main__":

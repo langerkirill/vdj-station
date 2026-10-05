@@ -28,10 +28,12 @@
       practiceView: "mix",
       practiceBestItems: [],
       practiceBestLoading: false,
+      practiceBestHidePlayed: false,
+      practiceBestLivePlayedError: "",
       practiceAnalyzeJob: null,
       practiceAnalyzeTimer: null,
       practiceSummary: null,
-      library: "Both",
+      library: "House",
       folders: [],
       folderTrees: null,
       selectedDests: [],
@@ -44,6 +46,15 @@
       trackSearch: "",
       readinessFilter: "all",
       crateFilter: "all",
+      /** House fork: Add Cues folder (crate) filter; "" = all folders. */
+      houseCrate: "Sauna Fest House",
+      /** House fork: BPM window filter (null = off) */
+      bpmMin: null,
+      bpmMax: null,
+      /** "default" | "bpm" | "camelot" */
+      houseSortKey: "default",
+      /** "asc" | "desc" */
+      houseSortDir: "asc",
       setDirFilter: "pajamathon",
       setApprovalFilter: "all",
       recommendation: null,
@@ -118,6 +129,10 @@
       assembleMinFit: null,
       assembleMixPrefsTimer: null,
       lastCueCopy: null,
+      stemAuditJob: null,
+      stemAuditTimer: null,
+      stemInventory: null,
+      stemCheckResult: null,
     };
   }
 
@@ -145,6 +160,10 @@
 
   function isSetOverviewMode() {
     return state.mode === "set_overview";
+  }
+
+  function isStemsMode() {
+    return state.mode === "stems";
   }
 
   /**
@@ -197,6 +216,91 @@
       const rank =
         addCuesReadinessRank(state.tracks[a]) - addCuesReadinessRank(state.tracks[b]);
       if (rank !== 0) return rank;
+      return a - b;
+    });
+  }
+
+
+  /**
+   * BPM for a track row (server exposes bpm top-level; fall back to cues.bpm).
+   * @param {any} track
+   * @returns {number | null}
+   */
+  function trackBpmValue(track) {
+    const raw = track && (track.bpm != null ? track.bpm : track.cues && track.cues.bpm);
+    const n = Number(raw);
+    return raw != null && raw !== "" && Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  /**
+   * Parse "8A" / "12b" into { num, letter } or null.
+   * @param {unknown} value
+   */
+  function parseCamelot(value) {
+    const m = /^\s*(1[0-2]|[1-9])\s*([ABab])\s*$/.exec(String(value == null ? "" : value));
+    if (!m) return null;
+    return { num: Number(m[1]), letter: m[2].toUpperCase() };
+  }
+
+  /**
+   * Sort rank for Camelot keys: 1A, 1B, 2A, 2B ... 12A, 12B (number-major).
+   * @param {unknown} value
+   * @returns {number | null}
+   */
+  function camelotSortValue(value) {
+    const c = parseCamelot(value);
+    return c ? c.num * 2 + (c.letter === "B" ? 1 : 0) : null;
+  }
+
+  /**
+   * @param {any} track
+   * @returns {string}
+   */
+  function trackCamelot(track) {
+    const c = parseCamelot(track && (track.camelot || (track.cues && track.cues.camelot)));
+    return c ? `${c.num}${c.letter}` : "";
+  }
+
+  /**
+   * @param {any} track
+   * @param {number | null} min
+   * @param {number | null} max
+   */
+  function bpmInRange(track, min, max) {
+    const lo = min == null || min === "" ? null : Number(min);
+    const hi = max == null || max === "" ? null : Number(max);
+    if (lo == null && hi == null) return true;
+    const bpm = trackBpmValue(track);
+    if (bpm == null) return false;
+    if (lo != null && Number.isFinite(lo) && bpm < lo) return false;
+    if (hi != null && Number.isFinite(hi) && bpm > hi) return false;
+    return true;
+  }
+
+  /**
+   * House Add Cues ordering. Tracks without the sort value always go last
+   * (in both directions). Ties fall back to BPM then original index.
+   * @param {number[]} indexes
+   * @param {"default"|"bpm"|"camelot"} key
+   * @param {"asc"|"desc"} dir
+   */
+  function sortHouseIndexes(indexes, key, dir) {
+    if (key !== "bpm" && key !== "camelot") return sortAddCuesIndexes(indexes);
+    const sign = dir === "desc" ? -1 : 1;
+    const val = (i) =>
+      key === "bpm" ? trackBpmValue(state.tracks[i]) : camelotSortValue(trackCamelot(state.tracks[i]));
+    return indexes.slice().sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      if (va == null && vb == null) return a - b;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (va !== vb) return sign * (va - vb);
+      if (key === "camelot") {
+        const ba = trackBpmValue(state.tracks[a]);
+        const bb = trackBpmValue(state.tracks[b]);
+        if (ba != null && bb != null && ba !== bb) return ba - bb;
+      }
       return a - b;
     });
   }
@@ -294,11 +398,18 @@
     isPracticeMode,
     isBestSetMode,
     isSetOverviewMode,
+    isStemsMode,
     currentTrack,
     stillOnTrack,
     trackReadinessStatus,
     addCuesReadinessRank,
     sortAddCuesIndexes,
+    trackBpmValue,
+    parseCamelot,
+    camelotSortValue,
+    trackCamelot,
+    bpmInRange,
+    sortHouseIndexes,
     addCuesSection,
     trackRetryKind,
     trackLastCuedMs,
