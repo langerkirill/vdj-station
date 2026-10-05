@@ -75,18 +75,18 @@ class LoopSeamClientTests(unittest.TestCase):
 class LoopSeamRetryTests(unittest.TestCase):
     def test_retry_placements_stay_on_the_phrase_one(self):
         placements = StemMixin._loop_retry_placements(
-            10.0, 16, 0.5, max_attempts=LOOP_SEAM_MAX_ATTEMPTS
+            10.0, 32, 0.5, max_attempts=LOOP_SEAM_MAX_ATTEMPTS
         )
-        self.assertEqual(placements[0], (10.0, 16))
+        self.assertEqual(placements[0], (10.0, 32))
         starts = {start for start, _ in placements}
         self.assertEqual(starts, {10.0})
         beats = {beats for _, beats in placements}
-        self.assertTrue(beats <= {4, 8, 16, 32})
-        self.assertIn(8, beats)
+        self.assertTrue(beats <= {16, 32, 64})
+        self.assertIn(32, beats)
         self.assertEqual(LOOP_SEAM_MAX_ATTEMPTS, 3)
 
-    def test_validate_keeps_stem_clean_loop_on_the_original_one(self):
-        """Gemini wrap is advisory; never nudge off the yellow [1]."""
+    def test_validate_rejects_loop_that_fails_seam_after_doubled_and_halved_retries(self):
+        """Kirill 2026-10-03: only loops that pass the seam test; retry x2 and /2 on the same 1."""
         from vdj_cuer.stem_evidence import StemProfile
         from automatic_music_cuer_gemini import AutomaticMusicCuer
 
@@ -114,9 +114,8 @@ class LoopSeamRetryTests(unittest.TestCase):
                 require_gemini_seam=True,
             )
 
-        self.assertIsNotNone(accepted)
-        self.assertEqual(accepted["start"], 0.0)
-        self.assertEqual(gemini.call_count, 1)
+        self.assertIsNone(accepted)
+        self.assertGreaterEqual(gemini.call_count, 2)
 
     def test_validate_accepts_loop_when_vocals_are_already_on_the_one(self):
         from vdj_cuer.stem_evidence import StemProfile
@@ -132,7 +131,13 @@ class LoopSeamRetryTests(unittest.TestCase):
             "vocal": StemProfile.from_frames([0.7] * 320, frame_seconds=0.25),
         }
 
-        with patch.object(cuer, "validate_color_assignment", return_value="green"):
+        def _pass(*a, **k):
+            cuer._last_seam = {"passed": True, "windows": {}, "wavs": []}
+            return True
+
+        with patch.object(cuer, "validate_color_assignment", return_value="green"), patch.object(
+            cuer, "_evaluate_loop_seam_with_gemini", side_effect=_pass
+        ):
             accepted = cuer._validate_loop_candidate(
                 profiles=profiles,
                 start=0.0,
@@ -140,12 +145,23 @@ class LoopSeamRetryTests(unittest.TestCase):
                 beat_duration=0.5,
                 model_elements=["drums", "vocals", "bass", "synth"],
                 loop_name="Vocal Groove",
-                audio_file_path=None,
-                require_gemini_seam=False,
+                audio_file_path="/tmp/mock.m4a",
+                require_gemini_seam=True,
             )
 
         self.assertIsNotNone(accepted)
         self.assertEqual(accepted["start"], 0.0)
+        self.assertTrue(accepted["seam"]["passed"])
+
+        # No audio -> the seam cannot be tested -> the loop is refused.
+        with patch.object(cuer, "validate_color_assignment", return_value="green"):
+            self.assertIsNone(
+                cuer._validate_loop_candidate(
+                    profiles=profiles, start=0.0, length_beats=16, beat_duration=0.5,
+                    model_elements=["drums"], loop_name="X", audio_file_path=None,
+                    require_gemini_seam=False,
+                )
+            )
 
     def test_zero_loops_ok_when_nothing_passes(self):
         """Song may correctly keep no loops after all retries fail."""

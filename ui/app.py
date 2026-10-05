@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import subprocess
 import time
@@ -46,7 +47,7 @@ from sorter.library import (
     list_ready_tracks,
 )
 
-UI_BUILD = "20260829-recs-event-plays"
+UI_BUILD = "20260830-stems-new"
 from sorter.pajamathon_set_sync import sync_pajamathon_set_deletes
 from sorter.recommend import get_recommender
 from sorter.autocue_path import ensure_autocue_on_path
@@ -145,6 +146,16 @@ from sorter.practice_sets import (
     list_practice_mixes,
 )
 from sorter.practice_analyze import get_analyze_job, start_analyze_job
+from sorter.stem_audit import (
+    cancel_stem_audit_job,
+    check_one_stem,
+    delete_stem_sidecars,
+    get_stem_audit_job,
+    latest_stem_audit_job,
+    start_stem_audit_job,
+    stem_inventory,
+)
+from sorter.live_set_played import filter_best_items_hide_live_played
 from sorter.transitions_db import (
     annotate_mixes_exclude_from_best,
     ensure_database,
@@ -155,6 +166,7 @@ from sorter.transitions_db import (
     update_practice_score,
 )
 
+log = logging.getLogger("music-sorter")
 app = FastAPI(title="Music Sorter", version="0.2.0")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -1898,7 +1910,8 @@ def post_remove_ready(body: RemoveReadyRequest) -> dict[str, Any]:
 def post_delete_add_cues(body: DeleteAddCuesRequest) -> dict[str, Any]:
     """
     Delete an Add Cues track entirely: audio + stems to Trash, and remove the
-    VirtualDJ Song entry (cues + loops for that path).
+    VirtualDJ Song entry (cues + loops for that path). Inbox deletes do not
+    remove the Sets/Pajamathon copy — use Delete from Pajamathon for that.
     """
     try:
         result = delete_add_cues_track(
@@ -1921,6 +1934,9 @@ def post_delete_add_cues(body: DeleteAddCuesRequest) -> dict[str, Any]:
                     extra_deleted=[source.name],
                     dry_run=body.dry_run,
                     to_trash=body.to_trash,
+                    # Inbox delete is cleanup after cueing / Add To Set.
+                    # Set copies are removed only via Delete from Pajamathon.
+                    propagate_to_set=False,
                 )
         if not body.dry_run:
             append_action(
@@ -2619,6 +2635,7 @@ def practice_best(
     min_overall: float = Query(7.0),
     saved_only: bool = Query(False),
     min_priority: int = Query(0, ge=0, le=5),
+    hide_live_played: bool = Query(False),
 ) -> dict[str, Any]:
     """Cross-mix shortlist from Gemini rankings + user priority tiers."""
     try:
@@ -2629,9 +2646,21 @@ def practice_best(
             saved_only=saved_only,
             min_priority=min_priority,
         )
+        hidden = 0
+        live_played_error = ""
+        try:
+            items, hidden = filter_best_items_hide_live_played(
+                items, hide=hide_live_played
+            )
+        except Exception as exc:
+            log.exception("Failed to annotate live-set plays for Best for set")
+            live_played_error = str(exc)
         return {
             "items": items,
             "count": len(items),
+            "hidden_live_played": hidden,
+            "hide_live_played": hide_live_played,
+            "live_played_error": live_played_error,
             "prefix": prefix,
             "min_overall": min_overall,
             "saved_only": saved_only,
@@ -3008,6 +3037,94 @@ def get_meta(path: str = Query(...)) -> dict[str, Any]:
             status_code=500,
             detail=f"ffprobe failed: {exc.stderr if exc.stderr else exc}",
         ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class StemAuditRequest(BaseModel):
+    scope: str = "all"
+    skip_scanned: bool = True
+
+
+class StemCheckRequest(BaseModel):
+    path: str
+
+
+class StemDeleteRequest(BaseModel):
+    paths: list[str]
+
+
+@app.get("/api/stems/inventory")
+def stems_inventory() -> dict[str, Any]:
+    try:
+        return {"ok": True, **stem_inventory()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/stems/audit")
+def stems_audit_start(body: StemAuditRequest) -> dict[str, Any]:
+    try:
+        job = start_stem_audit_job(
+            scope=body.scope, skip_scanned=body.skip_scanned
+        )
+        return {"ok": True, "job": job}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/stems/audit")
+def stems_audit_latest() -> dict[str, Any]:
+    return {"ok": True, "job": latest_stem_audit_job()}
+
+
+@app.get("/api/stems/audit/{job_id}")
+def stems_audit_status(job_id: str) -> dict[str, Any]:
+    job = get_stem_audit_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown stem audit job")
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/stems/audit/{job_id}/cancel")
+def stems_audit_cancel(job_id: str) -> dict[str, Any]:
+    try:
+        job = cancel_stem_audit_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown stem audit job") from None
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/stems/check")
+def stems_check(body: StemCheckRequest) -> dict[str, Any]:
+    try:
+        return {"ok": True, "track": check_one_stem(body.path)}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/stems/delete")
+def stems_delete(body: StemDeleteRequest) -> dict[str, Any]:
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="No sidecar paths to delete")
+    try:
+        result = delete_stem_sidecars(body.paths)
+        append_action(
+            "delete_stems",
+            name=f"{result['deleted']} sidecars",
+            details={"paths": result.get("paths") or []},
+        )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

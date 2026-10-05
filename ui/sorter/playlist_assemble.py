@@ -234,6 +234,7 @@ def slug_event(name: str) -> str:
 def event_folder_name(event_name: str) -> str:
     """Folder name under Music/DJ/Music/Sets — e.g. Pajamathon 2026."""
     name = (event_name or "").strip() or "Pajamathon"
+    name = re.sub(r"[\\/]+", " ", name).replace("..", "").strip() or "Pajamathon"
     if re.fullmatch(r"pajama(?:thon)?", name, flags=re.I):
         return "Pajamathon 2026"
     if not re.search(r"20\d{2}", name):

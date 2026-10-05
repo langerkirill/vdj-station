@@ -15,7 +15,7 @@ from .common import (
 
 MIN_CUE_CONFIDENCE = 0.70
 MIN_LOOP_CONFIDENCE = 0.62
-ALLOWED_LOOP_BEATS = frozenset({4, 8, 16, 32})
+ALLOWED_LOOP_BEATS = frozenset({16, 32, 64})  # Kirill 2026-10-04 (round 2): min 16 beats, never 8
 
 
 def _confidence(item: Dict) -> float:

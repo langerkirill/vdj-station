@@ -149,7 +149,7 @@ class AutoCueRetryPathTests(unittest.TestCase):
             sidecar.write_bytes(b"stems")
             self.assertEqual(retry_mod.adjacent_vdj_stems(audio), sidecar)
 
-    def test_start_retry_cues_skips_without_stems(self):
+    def test_start_retry_cues_skips_all_without_stems(self):
         with tempfile.TemporaryDirectory() as tmp:
             cues = Path(tmp) / "Cues"
             inbox = cues / "Add Cues"
@@ -172,9 +172,72 @@ class AutoCueRetryPathTests(unittest.TestCase):
                 ),
                 patch.object(retry_mod, "persist_jobs", lambda *a, **k: None),
             ):
-                job = retry_mod.start_retry_cues(audio, require_grid=False)
+                job = retry_mod.start_retry_cues(
+                    audio, require_grid=False, write_scope="all"
+                )
+            self.assertEqual(job.status, "skipped")
+            self.assertIn("VirtualDJ", job.message)
+            self.assertIn("stems", job.message.lower())
+            self.assertFalse(job.preflight.get("has_stems", True))
+
+    def test_start_retry_cues_skips_loops_without_stems(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cues = Path(tmp) / "Cues"
+            inbox = cues / "Add Cues"
+            inbox.mkdir(parents=True)
+            audio = inbox / "song.flac"
+            audio.write_bytes(b"x")
+            with (
+                patch.object(retry_mod, "CUES_ROOT", cues),
+                patch.object(retry_mod, "LIBRARIES", {}),
+                patch.object(retry_mod, "is_virtualdj_running", return_value=False),
+                patch.object(
+                    retry_mod,
+                    "summarize_cues",
+                    return_value=type("C", (), {"cue_count": 0})(),
+                ),
+                patch.object(
+                    retry_mod,
+                    "assess_grid_for_autocue",
+                    return_value={"can_autocue": True},
+                ),
+                patch.object(retry_mod, "persist_jobs", lambda *a, **k: None),
+            ):
+                job = retry_mod.start_retry_cues(
+                    audio, require_grid=False, write_scope="loops"
+                )
             self.assertEqual(job.status, "skipped")
             self.assertIn(".vdjstems", job.message)
+            self.assertFalse(job.preflight.get("has_stems", True))
+
+    def test_start_retry_cues_queues_cues_without_stems(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cues = Path(tmp) / "Cues"
+            inbox = cues / "Add Cues"
+            inbox.mkdir(parents=True)
+            audio = inbox / "song.flac"
+            audio.write_bytes(b"x")
+            with (
+                patch.object(retry_mod, "CUES_ROOT", cues),
+                patch.object(retry_mod, "LIBRARIES", {}),
+                patch.object(retry_mod, "is_virtualdj_running", return_value=False),
+                patch.object(
+                    retry_mod,
+                    "summarize_cues",
+                    return_value=type("C", (), {"cue_count": 0})(),
+                ),
+                patch.object(
+                    retry_mod,
+                    "assess_grid_for_autocue",
+                    return_value={"can_autocue": True},
+                ),
+                patch.object(retry_mod.threading.Thread, "start", lambda self: None),
+                patch.object(retry_mod, "persist_jobs", lambda *a, **k: None),
+            ):
+                job = retry_mod.start_retry_cues(
+                    audio, require_grid=False, write_scope="cues"
+                )
+            self.assertEqual(job.status, "queued")
             self.assertFalse(job.preflight.get("has_stems", True))
 
     def test_start_retry_cues_queues_when_stems_exist(self):

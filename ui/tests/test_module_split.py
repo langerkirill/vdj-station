@@ -53,6 +53,7 @@ class ModuleSplitAssetTests(unittest.TestCase):
         self.assertLess(html.index("waveform.js"), html.index("app.js"))
         self.assertLess(html.index("practice.js"), html.index("app.js"))
         self.assertLess(html.index("assemble.js"), html.index("app.js"))
+        self.assertLess(html.index("stems.js"), html.index("app.js"))
 
     def test_app_js_is_no_longer_the_sole_home(self) -> None:
         app = read_static("app.js")

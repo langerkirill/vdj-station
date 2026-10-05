@@ -5157,12 +5157,12 @@ body.mode-practice .pipeline-modes button[data-mode="practice"] {
 }
 
 .transport-hero .transport-play {
-  width: 48px !important;
-  height: 48px !important;
-  border-radius: 50%;
+  width: 40px !important;
+  height: 32px !important;
+  border-radius: 3px;
   background: var(--accent) !important;
   color: var(--accent-ink, #101508) !important;
-  box-shadow: 0 0 0 4px rgb(var(--accent-rgb) / 0.15), 0 8px 24px rgb(var(--accent-rgb) / 0.25);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2), 0 1px 0 rgb(0 0 0 / 0.25);
 }
 
 .transport-hero .transport-play:hover {
@@ -5814,8 +5814,8 @@ body.mode-review.track-is-cued .review-section-autocue .btn.full.primary {
 
 .transport-hero .transport-play {
   box-shadow:
-    0 0 0 5px rgb(var(--accent-rgb) / 0.12),
-    0 10px 28px rgb(var(--accent-rgb) / 0.28) !important;
+    inset 0 1px 0 rgb(255 255 255 / 0.2),
+    0 1px 0 rgb(0 0 0 / 0.28) !important;
 }
 
 .waveform-hero {
@@ -7661,6 +7661,17 @@ body.mode-best-set #bestSetPanel {
 .best-set-hero h2 {
   margin: 0;
 }
+.best-set-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.best-set-hide-played.is-on,
+button.best-set-hide-played[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent, #c8ff62) 55%, var(--border, #2a3344));
+  color: var(--accent, #c8ff62);
+}
 .best-set-now {
   flex: 0 0 auto;
   margin: 0 0 12px;
@@ -8647,23 +8658,42 @@ html[data-world="pool-deck"] .transport {
 }
 
 html[data-world="pool-deck"] .transport-btn {
-  width: 40px;
-  height: 28px;
-  border-radius: 2px;
+  width: 32px;
+  height: 32px;
+  border-radius: 3px;
   border: 1px solid #2e322e;
   background: linear-gradient(180deg, #2a2e2a, #141614);
   color: var(--muted-bright);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
 
+html[data-world="pool-deck"] .transport-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 html[data-world="pool-deck"] .transport-play,
 html[data-world="pool-deck"] .transport-hero .transport-play {
-  width: 56px !important;
+  width: 40px !important;
   height: 32px !important;
-  border-radius: 2px !important;
+  border-radius: 3px !important;
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.2),
-    0 2px 0 #3a2808 !important;
+    inset 0 1px 0 rgb(255 255 255 / 0.22),
+    0 1px 0 #3a2808 !important;
+}
+
+html[data-world="pool-deck"] .stage-tools .btn {
+  min-height: 32px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 3px;
+  font-size: 12px;
+  gap: 6px;
+}
+
+html[data-world="pool-deck"] .stage-tools .btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 html[data-world="pool-deck"] .transport-time {
@@ -8896,6 +8926,8 @@ html[data-world="pool-deck"][data-color-scheme="light"] {
   --bg-elevated: #fff8ef;
   --bg-soft: #efe4d4;
   --bg-strong: #e4d5c2;
+  --panel: #fff8ef;
+  --panel-2: #efe4d4;
   --border: #c4b29a;
   --border-strong: #9a8468;
   --text: #16120e;
@@ -8917,12 +8949,12 @@ html[data-world="pool-deck"][data-color-scheme="light"] body::before {
   background:
     linear-gradient(
       180deg,
-      rgb(255 79 154 / 0.18) 0%,
-      rgb(255 184 120 / 0.2) 18%,
-      rgb(255 248 239 / 0.7) 100%
+      rgb(255 248 239 / 0.78) 0%,
+      rgb(255 248 239 / 0.86) 42%,
+      rgb(243 235 224 / 0.92) 100%
     ),
     url("/static/world/pool-day.jpg") center / cover no-repeat;
-  filter: saturate(1.12);
+  filter: saturate(1.04);
 }
 
 html[data-world="pool-deck"][data-color-scheme="light"] .mode-seg button,
@@ -8937,6 +8969,11 @@ html[data-world="pool-deck"][data-color-scheme="light"] .seg button.active {
   color: var(--accent-ink);
   background: rgb(var(--accent-rgb) / 0.35);
   text-shadow: none;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] .seg {
+  background: #fffaf3;
+  border-color: #c4b29a;
 }
 
 html[data-world="pool-deck"][data-color-scheme="light"] .panel,
@@ -8967,10 +9004,21 @@ html[data-world="pool-deck"][data-color-scheme="light"] .transport {
 }
 
 html[data-world="pool-deck"][data-color-scheme="light"] .transport-btn {
+  width: 32px;
+  height: 32px;
   border-color: var(--border);
   background: linear-gradient(180deg, #fffaf3, #e8dccb);
   color: var(--text);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.9);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] .transport-play,
+html[data-world="pool-deck"][data-color-scheme="light"] .transport-hero .transport-play {
+  width: 40px !important;
+  height: 32px !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    0 1px 0 #9a5a10 !important;
 }
 
 html[data-world="pool-deck"][data-color-scheme="light"] .cassette-well,
@@ -9472,4 +9520,452 @@ html[data-world="pool-deck"][data-color-scheme="light"] .check-no {
 
 html[data-world="pool-deck"][data-color-scheme="light"] .check-ok {
   color: #0f6a48;
+}
+
+/* Day Practice: linen keys, not leftover night cards */
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row {
+  background: #fffaf3;
+  border: 1px solid #c4b29a;
+  border-radius: 4px;
+  color: #16120e;
+  box-shadow: 0 1px 0 rgb(86 60 45 / 0.12);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row:hover {
+  background: #f3e0c8;
+  border-color: #9a8468;
+  transform: none;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row.active {
+  background: #fff3d6;
+  border-color: #c47a18;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.7),
+    0 2px 0 #9a5a10;
+  color: #16120e;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row strong {
+  color: #16120e;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row .mix-dur {
+  color: #5c5044;
+  opacity: 1;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row .badge.ok {
+  color: #0f6a48;
+  background: rgb(125 255 194 / 0.32);
+  border-color: rgb(23 107 74 / 0.32);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-mix-row .badge.warn {
+  color: #8b1224;
+  background: rgb(255 107 90 / 0.2);
+  border-color: rgb(139 18 36 / 0.32);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .score-pill {
+  color: #16120e;
+  background: #fffaf3;
+  border-color: #c4b29a;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .score-pill.good {
+  color: #0f6a48;
+  background: rgb(125 255 194 / 0.34);
+  border-color: rgb(23 107 74 / 0.34);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .score-pill.mid {
+  color: #6b4e12;
+  background: rgb(240 193 75 / 0.34);
+  border-color: rgb(107 78 18 / 0.34);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .score-pill.bad {
+  color: #8b1224;
+  background: rgb(255 107 90 / 0.22);
+  border-color: rgb(139 18 36 / 0.32);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-tx {
+  background: #fffaf3;
+  border-color: #c4b29a;
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgb(86 60 45 / 0.1);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-summary-card,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-summary > * {
+  background: #fffaf3 !important;
+  border: 1px solid #c4b29a !important;
+  border-radius: 6px !important;
+  color: #16120e !important;
+  box-shadow: 0 1px 0 rgb(86 60 45 / 0.1);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-summary-card .label,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-summary-card .hint {
+  color: #5c5044 !important;
+  opacity: 1;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-summary-card .value {
+  color: #16120e !important;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice #practiceTxSort {
+  background: #fffaf3;
+  border-color: #c4b29a;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice #practiceTxSort button {
+  color: #5c5044;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice #practiceTxSort button.active {
+  color: #0b5c56;
+  background: rgb(62 224 208 / 0.28);
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-tx-comments,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-alt,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-track-row {
+  background: #f3ebe0;
+  color: #16120e;
+  border-color: #c4b29a;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-wave-chip {
+  background: #fffaf3;
+  border-color: #c4b29a;
+  color: #16120e;
+  border-radius: 4px;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-wave-chip .pw-num {
+  color: #1a0e04;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-kicker,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-tx-bullets .col-title,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-alts-title,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .practice-tx-arrow-row {
+  color: #5c5044;
+  opacity: 1;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .pipeline-copy strong,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .now-playing {
+  color: #16120e !important;
+  text-shadow: none;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .main > .player,
+html[data-world="pool-deck"][data-color-scheme="light"] body.mode-practice .main > .practice-panel {
+  border-radius: 6px;
+}
+
+/* ==========================================================================
+   Stem vocal-check tab
+   ========================================================================== */
+
+body.mode-stems .pipeline-modes button[data-mode="stems"] {
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.35);
+}
+
+body.mode-stems .shell .app {
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) !important;
+}
+
+body.mode-stems .shell .main {
+  grid-template-columns: 1fr !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  gap: 0 !important;
+}
+
+body.mode-stems #playerPanel,
+body.mode-stems #foldersPanel,
+body.mode-stems #reviewPanel,
+body.mode-stems #practicePanel,
+body.mode-stems #practiceWavePanel,
+body.mode-stems #recsPanel,
+body.mode-stems #assemblePanel,
+body.mode-stems #bestSetPanel,
+body.mode-stems #setOverviewPanel,
+body.mode-stems #cuesPanel,
+body.mode-stems #speedPanel,
+body.mode-stems #notesPanel,
+body.mode-stems #waveToolsDrawer,
+body.mode-stems #blockBanner,
+body.mode-stems #placementCard,
+body.mode-stems #recommendation,
+body.mode-stems #sortActions,
+body.mode-stems #reviewActions,
+body.mode-stems #shortcutsHint {
+  display: none !important;
+}
+
+body.mode-stems #stemsPanel {
+  display: flex !important;
+  flex-direction: column !important;
+  grid-column: 1 / -1 !important;
+  grid-row: 1 / -1 !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  padding: 18px 18px 24px !important;
+}
+
+body.mode-stems .zone-queue .track-search-wrap,
+body.mode-stems .track-search-wrap,
+body.mode-stems #listToolbar {
+  display: none !important;
+}
+
+.stems-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 14px;
+}
+
+.stems-stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 5.5rem;
+  padding: 8px 10px;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.18);
+}
+
+.stems-stat strong {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.15rem;
+}
+
+.stems-stat span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.stems-stat.is-bad strong {
+  color: var(--bad);
+}
+
+.stems-progress {
+  margin: 0 0 14px;
+}
+
+.stems-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stems-progress-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: rgb(255 255 255 / 0.08);
+  overflow: hidden;
+}
+
+#stemsProgressFill {
+  height: 100%;
+  width: 0;
+  background: rgb(var(--accent-rgb) / 0.85);
+  transition: width 160ms ease;
+}
+
+.stems-check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 0 0 16px;
+}
+
+.stems-check-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 280px;
+}
+
+.stems-check-field span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+#stemsCheckPath {
+  width: 100%;
+}
+
+.stems-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.stems-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.stems-table th,
+.stems-table td {
+  text-align: left;
+  padding: 8px 6px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  vertical-align: top;
+}
+
+.stems-table .stems-path {
+  word-break: break-all;
+}
+
+.stems-table .stems-holes {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.stems-rail {
+  padding: 12px;
+}
+
+.stems-rail-kicker {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.stems-empty {
+  color: var(--muted);
+  padding: 12px 6px;
+}
+
+/* Mode keys: 7 labels were crushing in a fused .seg (min-width: 0, overflow hidden).
+   Best for set / practice shells are column + overflow:hidden — a wrapping
+   flex:1 1 100% row was not counted in the topbar's auto min-size, so the
+   pipeline strip painted on top of the keys. */
+html[data-world="pool-deck"] .topbar,
+html[data-world="pool-deck"] .shell .topbar {
+  flex: 0 0 auto !important;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  row-gap: 8px;
+  column-gap: 12px;
+  height: auto !important;
+  min-height: 0 !important;
+  overflow: visible;
+}
+
+html[data-world="pool-deck"] .brand {
+  order: 0;
+  flex: 0 0 auto;
+}
+
+html[data-world="pool-deck"] .topbar-right,
+html[data-world="pool-deck"] #autocueJobChip,
+html[data-world="pool-deck"] #quietSessionChip {
+  order: 1;
+}
+
+html[data-world="pool-deck"] #modeSeg.mode-seg {
+  order: 2;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  height: auto !important;
+  min-height: 40px;
+  padding: 4px;
+  overflow: visible !important;
+  background: rgb(0 0 0 / 0.38);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
+html[data-world="pool-deck"] .pipeline-strip,
+html[data-world="pool-deck"] .shell .pipeline-strip {
+  flex: 0 0 auto !important;
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  margin-top: 4px;
+}
+
+html[data-world="pool-deck"] #modeSeg.mode-seg button,
+html[data-world="pool-deck"] #modeSeg.mode-seg button.btn {
+  flex: 0 0 auto;
+  min-width: max-content !important;
+  min-height: 32px;
+  padding: 6px 12px !important;
+  margin: 0;
+  border: 0 !important;
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+html[data-world="pool-deck"] #modeSeg.mode-seg button + button {
+  border-left: 0 !important;
+}
+
+html[data-world="pool-deck"] #modeSeg.mode-seg button:hover:not(.active) {
+  background: rgb(255 255 255 / 0.08);
+  color: var(--text);
+}
+
+html[data-world="pool-deck"] #modeSeg.mode-seg button:focus-visible {
+  outline: 2px solid var(--pool);
+  outline-offset: 1px;
+}
+
+html[data-world="pool-deck"] #modeSeg.mode-seg button.active {
+  color: var(--pool);
+  background: rgb(62 224 208 / 0.16);
+  box-shadow: inset 0 -3px 0 var(--hot);
+  text-shadow: none;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] #modeSeg.mode-seg {
+  background: #fffaf3;
+  border-color: #8a6f52;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] #modeSeg.mode-seg button {
+  color: #2c271f;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] #modeSeg.mode-seg button:hover:not(.active) {
+  background: #f3e0c8;
+  color: #16120e;
+}
+
+html[data-world="pool-deck"][data-color-scheme="light"] #modeSeg.mode-seg button.active {
+  color: #128f86;
+  background: rgb(62 224 208 / 0.28);
+  box-shadow: inset 0 -3px 0 var(--hot);
 }

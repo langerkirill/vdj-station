@@ -30,7 +30,9 @@ class TrackAudioCache:
         with self._lock:
             for stem_name, path in stem_files:
                 if stem_name not in self.stem_profiles:
-                    self.stem_profiles[stem_name] = StemProfile.decode(path)
+                    self.stem_profiles[stem_name] = StemProfile.decode(
+                        path, voice=(stem_name == "vocal")
+                    )
             return dict(self.stem_profiles)
 
     def get_or_load_mix_profile(self, audio_path: str) -> StemProfile:

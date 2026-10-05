@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Libre+Bodoni:wght@700&family=Monoton&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260829-exclude-best" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260830-stems-new" />
   </head>
   <body class="mode-review">
     <!--
@@ -49,6 +49,10 @@
         <button type="button" data-mode="assemble" aria-pressed="false">
           <span class="mode-step">☰</span>
           <span class="mode-label">Assemble</span>
+        </button>
+        <button type="button" data-mode="stems" aria-pressed="false">
+          <span class="mode-step">♫</span>
+          <span class="mode-label">Stems</span>
         </button>
       </nav>
       <span id="autocueJobChip" class="autocue-job-chip" hidden title="AutoCue jobs"></span>
@@ -716,6 +720,45 @@
           <p class="hint" id="assembleFiles" hidden></p>
         </div>
 
+        <div class="panel stems-panel zone-rail" id="stemsPanel" hidden aria-label="Stem vocal analysis">
+          <div class="panel-header recs-header">
+            <div>
+              <div class="zone-kicker">VirtualDJ stems</div>
+              <h2>Stem vocal check</h2>
+              <div class="subtitle">Finds vocal-layer holes — ~10s digital-mute tiles while the mix is still loud. The full mix can still sound fine on speakers.</div>
+            </div>
+            <div class="actions recs-header-actions">
+              <button type="button" class="btn ghost" id="stemsCancelBtn" hidden>Cancel</button>
+              <button type="button" class="btn ghost" id="stemsScanCuedBtn">Scan new cued</button>
+              <button type="button" class="btn primary btn-cta" id="stemsScanAllBtn">Scan new</button>
+            </div>
+          </div>
+          <p class="hint" id="stemsInventoryHint">Looking up .vdjstems sidecars…</p>
+          <div class="stems-stats" id="stemsStats"></div>
+          <div class="stems-progress" id="stemsProgress" hidden>
+            <div class="stems-progress-meta">
+              <span id="stemsProgressLabel">—</span>
+              <span id="stemsProgressCount">0/0</span>
+            </div>
+            <div class="stems-progress-bar" aria-hidden="true">
+              <div id="stemsProgressFill"></div>
+            </div>
+          </div>
+          <div class="stems-check-row">
+            <label class="stems-check-field">
+              <span>Check one file</span>
+              <input id="stemsCheckPath" type="text" placeholder="Path to audio or .vdjstems" spellcheck="false" />
+            </label>
+            <button type="button" class="btn" id="stemsCheckBtn">Check path</button>
+          </div>
+          <div class="stems-table-head">
+            <strong>Flagged files</strong>
+            <button type="button" class="btn danger" id="stemsDeleteBtn" disabled>Delete selected sidecars</button>
+          </div>
+          <div id="stemsBrokenTable" class="stems-table"></div>
+          <p class="hint" id="stemsNote">Deleting only removes the .vdjstems sidecar, never the audio. VirtualDJ may recreate it on load if Save prepared stems is Automatic.</p>
+        </div>
+
         <div class="panel practice-panel zone-rail" id="practicePanel" hidden aria-label="Practice lab">
           <div class="practice-hero">
             <div class="practice-hero-copy">
@@ -762,7 +805,10 @@
               <h2>Transition keepers</h2>
               <div class="subtitle" id="bestSetSubtitle">Across all pj mixes · Gemini keepers + your 1–5 priority</div>
             </div>
-            <span class="badge neutral" id="practiceBestCount">0</span>
+            <div class="best-set-hero-actions">
+              <button type="button" class="btn ghost best-set-hide-played" id="bestSetHidePlayedBtn" aria-pressed="false" title="Hide transitions that use a song already played in the live set (Played folder + Friday/Saturday).">Hide played</button>
+              <span class="badge neutral" id="practiceBestCount">0</span>
+            </div>
           </div>
           <div class="best-set-now" id="bestSetNow">
             <div class="best-set-now-kicker">Playing</div>
@@ -780,7 +826,7 @@
               </button>
             </div>
           </div>
-          <div class="practice-best-hint">Save / overall ≥ 7 / prioritized. Real sets marked Exclude from Best stay off this list. Play stays on this page.</div>
+          <div class="practice-best-hint">Save / overall ≥ 7 / prioritized. Real sets marked Exclude from Best stay off this list. Hide played drops songs already used Friday or Saturday.</div>
           <div id="practiceBestList" class="practice-best-list"></div>
         </div>
 
@@ -891,10 +937,10 @@
             </div>
 
             <div class="review-section review-section-delete">
-              <button type="button" class="btn full danger" id="deleteAddCuesBtn" title="Trash this Add Cues file and remove its VirtualDJ entry">
+              <button type="button" class="btn full danger" id="deleteAddCuesBtn" title="Trash this Add Cues file and remove its VirtualDJ entry. The Pajamathon set copy stays.">
                 Delete from Add Cues
               </button>
-              <p class="hint">Audio + stems → Trash · this path’s VDJ cues go with it</p>
+              <p class="hint">Audio + stems → Trash · this path’s VDJ cues go with it. Set copy stays.</p>
             </div>
 
             <details class="review-section review-section-secondary tool-drawer">
@@ -966,13 +1012,14 @@
       </div>
     </div>
 
-    <script src="/static/status_handoff.js?v=20260827-pool-day"></script>
-    <script src="/static/placements.js?v=20260827-pool-day"></script>
-    <script src="/static/state.js?v=20260827-pool-day"></script>
-    <script src="/static/transport.js?v=20260827-pool-day"></script>
-    <script src="/static/waveform.js?v=20260827-pool-day"></script>
-    <script src="/static/practice.js?v=20260827-pool-day"></script>
-    <script src="/static/assemble.js?v=20260827-pool-day"></script>
-    <script src="/static/app.js?v=20260829-recs-event-plays"></script>
+    <script src="/static/status_handoff.js?v=20260830-stems-new"></script>
+    <script src="/static/placements.js?v=20260830-stems-new"></script>
+    <script src="/static/state.js?v=20260830-stems-new"></script>
+    <script src="/static/transport.js?v=20260830-stems-new"></script>
+    <script src="/static/waveform.js?v=20260830-stems-new"></script>
+    <script src="/static/practice.js?v=20260830-stems-new"></script>
+    <script src="/static/assemble.js?v=20260830-stems-new"></script>
+    <script src="/static/stems.js?v=20260830-stems-new"></script>
+    <script src="/static/app.js?v=20260830-stems-new"></script>
   </body>
 </html>

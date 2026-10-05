@@ -110,13 +110,13 @@ WRITE_SCOPE_CUES = "cues"
 WRITE_SCOPE_LOOPS = "loops"
 WRITE_SCOPES = (WRITE_SCOPE_ALL, WRITE_SCOPE_CUES, WRITE_SCOPE_LOOPS)
 VDJ_STEM_NAMES = ("vocal", "hihat", "bass", "instruments", "kick")
-LOOP_BEAT_CHOICES = (32, 16, 8, 4)
-MIN_USEFUL_LOOP_BEATS = 4
+LOOP_BEAT_CHOICES = (64, 32, 16)  # Kirill 2026-10-04 (round 2): 16 beats minimum, prefer 32, allow 64, never 8
+MIN_USEFUL_LOOP_BEATS = 16
 TARGET_MIN_LOOPS = 2
-TARGET_MAX_LOOPS = 3
+TARGET_MAX_LOOPS = 3  # Kirill 2026-10-04: max 3, never overlapping
 # Wall-clock cap so 32-beat loops on slow tracks (e.g. Valley Of The Winds @ 75
 # BPM ≈ 25.6s) are shortened to a DJ-usable length.
-MAX_LOOP_DURATION_SECONDS = 14.0
+MAX_LOOP_DURATION_SECONDS = 34.0
 BEATGRID_ALIGNMENT_DURATION_SECONDS = 90
 BEATGRID_ALIGNMENT_SAMPLE_RATE = 8000
 BEATGRID_ALIGNMENT_FRAME_SECONDS = 0.04

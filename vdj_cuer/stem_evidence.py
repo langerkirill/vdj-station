@@ -20,10 +20,37 @@ SPECIFIC_INSTRUMENTS = ("piano", "synth", "strings", "guitar")
 # VDJ's "vocal" stem on instrumentals is melody bleed. Relative scores then
 # look medium/high because they are calibrated to that stem's own peak.
 # Memories vocal/instruments peak ≈ 0.21; NDULE/Essence/Sozinho ≥ 0.60.
-VOCAL_STEM_TO_INSTRUMENTS = 0.40
+VOCAL_STEM_TO_INSTRUMENTS = 0.28
 # Even on a vocal track, a window is not a singer if vocal energy is a
 # tiny fraction of kick+instruments (intro / breakdown).
 VOCAL_WINDOW_TO_MIX = 0.12
+
+
+# Kirill 2026-10-04 (relative vocals): the strict "sustained only" gate hid real
+# vocals (chops, chants, sung hooks, short phrases). A vocal is now judged against THIS
+# song's own vocal stem: a frame is "active" when it is at least 25% of the stem's own
+# p95 level, and a window counts as vocal when at least 30% of its frames are active
+# (a 4-bar sung phrase or a repeated chop passes; a single stray FX hit does not).
+# Cues are judged over their section (4x the 8-beat onset window), loops over their own
+# length. The stem itself must be a real vocal stem (see the bleed floor below).
+VOCAL_ACTIVE_REL = 0.25
+VOCAL_ACTIVE_SHARE = 0.30
+VOCAL_CUE_LOOKAHEAD = 4.0
+_VOCAL_MARKER_MIN = "medium"
+# Kirill 2026-10-04 (bleed floor): a song whose vocal stem is near silent in absolute
+# terms (p95 < 0.08) or far below the instruments (p95 < 28% of theirs) has NO vocals at
+# all -- no yellow/orange on any marker. Measured p95 / ratio: Cheyenne 0.089 / 0.317,
+# Control 0.49 / 0.82 and Ed Marquis 0.33 / 0.64 stay vocal; Bliss (pure instrumental)
+# 0.092 / 0.302, Timid Dancer 0.055 / 0.09, Adisyn Dreams 0.077, Canyon Beauty 0.066 and
+# Dreams 0.008 / 0.03 fall under the floor. Memories-type bleed sits at ~0.21.
+VOCAL_MIN_ABS_P95 = 0.08
+# Third floor, from the mid band (300-3400 Hz) of the vocal stem itself: a singer's
+# stem is modulated (syllables: spectral flux / mid energy while active >= 1.08 on
+# Cheyenne, 1.25 Control, 1.63 Ed Marquis) while a synth lead leaking into the vocal
+# stem is steady (0.70-0.72 on Bliss, Kaiserkraft, Nyctophobia -- all hand-confirmed
+# instrumentals even though their stems are as loud as a real vocal). Below 1.0 the
+# stem is not a voice. None (not measured) never blocks.
+VOCAL_MIN_MODULATION = 1.0
 
 
 def _percentile(values: Sequence[float], percentile: float) -> float:
@@ -58,6 +85,7 @@ class StemProfile:
     frames: tuple[float, ...]
     frame_seconds: float
     reference_peak: float
+    voice_modulation: Optional[float] = None
 
     @classmethod
     def from_frames(
@@ -71,8 +99,11 @@ class StemProfile:
         )
 
     @classmethod
-    def decode(cls, audio_path: str) -> "StemProfile":
-        """Decode an audio file once into a compact peak envelope."""
+    def decode(cls, audio_path: str, voice: bool = False) -> "StemProfile":
+        """Decode an audio file once into a compact peak envelope.
+
+        ``voice=True`` (the vocal stem) also measures the voice-modulation index.
+        """
         result = subprocess.run(
             [
                 "ffmpeg",
@@ -107,7 +138,12 @@ class StemProfile:
                 continue
             peaks.append(max(abs(sample) for sample in frame) / 32768.0)
         duration = len(samples) / SAMPLE_RATE
-        return cls.from_frames(peaks, frame_seconds=duration / PROFILE_BINS)
+        profile = cls.from_frames(peaks, frame_seconds=duration / PROFILE_BINS)
+        if voice:
+            from dataclasses import replace as _replace
+
+            profile = _replace(profile, voice_modulation=voice_modulation_index(audio_path))
+        return profile
 
     def _window(self, start: float, duration_seconds: float) -> tuple[float, ...]:
         first = max(0, int(start / self.frame_seconds))
@@ -157,6 +193,23 @@ class StemProfile:
             level = "none"
         return ActivityMeasurement(level, score, persistence, local_peak)
 
+    def p90(self) -> float:
+        return _percentile(self.frames, 0.90)
+
+    def vocal_window_present(self, start: float, duration_seconds: float) -> bool:
+        """True when this (vocal) stem is active for enough of the window.
+
+        Relative to the stem's own level (p95), not an absolute number, so a quiet
+        but real vocal track and a loud one are treated alike.
+        """
+        if self.reference_peak < GLOBAL_SILENCE_PEAK:
+            return False
+        window = self._window(max(0.0, start), max(self.frame_seconds, duration_seconds))
+        if not window:
+            return False
+        floor = VOCAL_ACTIVE_REL * self.reference_peak
+        return sum(v >= floor for v in window) / len(window) >= VOCAL_ACTIVE_SHARE
+
     def measure_centered(
         self, timestamp: float, duration_seconds: float = 4.0
     ) -> ActivityMeasurement:
@@ -182,9 +235,54 @@ class StemProfile:
         return ActivityMeasurement(level, score, 1.0, local_peak)
 
 
+def voice_modulation_index(audio_path: str) -> Optional[float]:
+    """Mid-band (300-3400 Hz) spectral flux / energy over the stem's active frames.
+
+    Voices are syllable-modulated (>= ~1.0); a steady synth bleeding into the vocal
+    stem sits near 0.5-0.8. Returns None if it cannot be measured.
+    """
+    try:
+        import numpy as np
+
+        raw = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", audio_path,
+             "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+            capture_output=True, check=True,
+        ).stdout
+        x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+        nper, hop = 512, 128
+        if len(x) < nper * 8:
+            return None
+        n_frames = (len(x) - nper) // hop + 1
+        idx = np.arange(nper)[None, :] + hop * np.arange(n_frames)[:, None]
+        window = np.hanning(nper + 1)[:-1].astype(np.float32)
+        mag = np.abs(np.fft.rfft(x[idx] * window, axis=1))
+        freqs = np.fft.rfftfreq(nper, 1.0 / 8000)
+        mid_mag = mag[:, (freqs >= 300) & (freqs <= 3400)]
+        mid_e = np.sqrt((mid_mag ** 2).sum(1))
+        full_e = np.sqrt((mag ** 2).sum(1))
+        flux = np.concatenate([[0.0], np.maximum(0.0, np.diff(mid_mag, axis=0)).sum(1)])
+        centers = (np.arange(n_frames) * hop + nper / 2) / 8000.0
+        slot = np.minimum((centers / FRAME_SECONDS).astype(int), int(len(x) / (8000 * FRAME_SECONDS)) - 1)
+        count = np.bincount(slot) + 1e-9
+        size = len(count)
+        mid_f = np.bincount(slot, weights=mid_e, minlength=size) / count
+        flux_f = np.bincount(slot, weights=flux, minlength=size) / count
+        full_f = np.bincount(slot, weights=full_e, minlength=size) / count
+        active = full_f > 0.25 * np.percentile(full_f, 95)
+        if active.sum() < 5 or mid_f[active].mean() <= 1e-12:
+            return None
+        return float(flux_f[active].mean() / mid_f[active].mean())
+    except Exception:
+        return None
+
+
 def load_stem_profiles(stem_files: Iterable[tuple[str, str]]) -> Dict[str, StemProfile]:
     """Decode each extracted VDJ stem once for all cue and loop checks."""
-    return {stem_name: StemProfile.decode(path) for stem_name, path in stem_files}
+    return {
+        stem_name: StemProfile.decode(path, voice=(stem_name == "vocal"))
+        for stem_name, path in stem_files
+    }
 
 
 def _strongest_level(*levels: str) -> str:
@@ -198,7 +296,10 @@ def _is_assertable(level: str) -> bool:
 def vocal_stem_is_usable(profiles: Dict[str, StemProfile]) -> bool:
     """False when the VDJ vocal stem is too quiet to be a singer (bleed)."""
     vocal = profiles.get("vocal")
-    if vocal is None or vocal.reference_peak < GLOBAL_SILENCE_PEAK:
+    if vocal is None or vocal.reference_peak < max(GLOBAL_SILENCE_PEAK, VOCAL_MIN_ABS_P95):
+        return False
+    modulation = getattr(vocal, "voice_modulation", None)
+    if modulation is not None and modulation < VOCAL_MIN_MODULATION:
         return False
     instruments = profiles.get("instruments")
     if instruments is None or instruments.reference_peak < GLOBAL_SILENCE_PEAK:
@@ -229,6 +330,7 @@ def measure_stem_evidence(
     model_elements: Iterable[str],
     centered: bool = False,
     strict_drums: bool = True,
+    vocal_lookahead: float = 1.0,
 ) -> StemEvidence:
     """Return only component claims supported by persistent stem activity."""
     measurements = {}
@@ -254,10 +356,18 @@ def measure_stem_evidence(
     else:
         drum_level = _strongest_level(kick_level, hihat_level)
     vocal_level = activity.get("vocal", "none")
-    if not vocal_stem_is_usable(profiles):
+    vprof = profiles.get("vocal")
+    if vprof is None or not vocal_stem_is_usable(profiles):
         vocal_level = "none"
-    elif _is_assertable(vocal_level) and not _vocal_competes_in_window(measurements):
-        vocal_level = "none"
+    else:
+        vstart = (timestamp - duration_seconds / 2.0) if centered else (
+            timestamp + POST_BOUNDARY_OFFSET_SECONDS
+        )
+        if vprof.vocal_window_present(vstart, duration_seconds * max(1.0, vocal_lookahead)):
+            if not _is_assertable(vocal_level):
+                vocal_level = _VOCAL_MARKER_MIN
+        elif _is_assertable(vocal_level):
+            vocal_level = "none"
     if vocal_level != activity.get("vocal"):
         activity = {**activity, "vocal": vocal_level}
 
@@ -614,3 +724,69 @@ def energy_ratio(
     if before <= 0.0001:
         return 10.0 if after > before else 1.0
     return after / before
+
+
+def loop_likelihood(
+    profiles: Dict[str, StemProfile],
+    start: float,
+    duration_seconds: float,
+    beat_duration: float,
+    transitions: Sequence[float] = (),
+) -> float:
+    """0..1 guess of how likely a loop at (start, length) wraps cleanly.
+
+    Combines: first-bar vs last-bar envelope similarity per stem, steady energy
+    across the loop (low variation), no vocal, and nearness to a section change.
+    """
+    if duration_seconds <= 0 or beat_duration <= 0 or not profiles:
+        return 0.0
+    bar = 4.0 * beat_duration
+    sims: list[float] = []
+    cvs: list[float] = []
+    for name, prof in profiles.items():
+        if name == "vocal" or prof.reference_peak < GLOBAL_SILENCE_PEAK:
+            continue
+        head = prof._window(start, bar)
+        tail = prof._window(start + duration_seconds - bar, bar)
+        if head and tail:
+            sims.append(_envelope_cosine(head, tail, bins=16))
+        body = prof._window(start, duration_seconds)
+        if body:
+            mean = sum(body) / len(body)
+            if mean > 1e-9:
+                var = sum((v - mean) ** 2 for v in body) / len(body)
+                cvs.append(min(1.0, math.sqrt(var) / mean))
+    sim = sum(sims) / len(sims) if sims else 0.0
+    steady = 1.0 - (sum(cvs) / len(cvs) if cvs else 1.0)
+    vocal = profiles.get("vocal")
+    vocal_free = 1.0
+    if vocal is not None and vocal.reference_peak >= GLOBAL_SILENCE_PEAK and vocal_stem_is_usable(profiles):
+        vocal_free = 1.0 - min(1.0, vocal.window_average(start, duration_seconds) / vocal.reference_peak)
+    near = 0.0
+    end = start + duration_seconds
+    for t in transitions:
+        gap = min(abs(start - t), abs(end - t))
+        near = max(near, max(0.0, 1.0 - gap / (16.0 * beat_duration)))
+    return round(0.45 * sim + 0.25 * max(0.0, steady) + 0.15 * vocal_free + 0.15 * near, 4)
+
+
+def loop_type_scores(
+    profiles: Dict[str, StemProfile], start: float, duration_seconds: float
+) -> Dict[str, float]:
+    """Mean energy over the loop window per stem group, normalized to each stem's own peak."""
+
+    def norm(name: str) -> float:
+        prof = profiles.get(name)
+        if prof is None or prof.reference_peak < GLOBAL_SILENCE_PEAK:
+            return 0.0
+        return min(1.0, prof.window_average(start, duration_seconds) / prof.reference_peak)
+
+    vocal = norm("vocal") if vocal_stem_is_usable(profiles) else 0.0
+    vprof = profiles.get("vocal")
+    if vocal and (vprof is None or not vprof.vocal_window_present(start, duration_seconds)):
+        vocal = 0.0
+    return {
+        "drum": max(norm("kick"), norm("hihat")),
+        "melody": max(norm("bass"), norm("instruments")),
+        "vocal": vocal,
+    }

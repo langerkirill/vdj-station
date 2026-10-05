@@ -1166,10 +1166,14 @@ class CopyCuesToPlacementTests(unittest.TestCase):
                     src, dest, database_path=db, create_backup=False
                 )
             self.assertTrue(result["ok"])
-            self.assertEqual(result["mode"], "injected")
+            self.assertEqual(result["mode"], "cloned")
             self.assertEqual(result["root_name"], "Pajamathon 2026")
             dest_block = db.read_text(encoding="utf-8")
-            self.assertIn('Name="Intro"', dest_block)
+            dest_at = dest_block.index(str(dest.resolve()))
+            dest_song = dest_block[dest_at : dest_block.index("</Song>", dest_at)]
+            self.assertIn('Name="Intro"', dest_song)
+            self.assertIn('Type="beatgrid"', dest_song)
+            self.assertIn('Type="loop"', dest_song)
 
     def test_allows_add_cues_source(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1265,6 +1269,364 @@ class CopyCuesToPlacementTests(unittest.TestCase):
             self.assertTrue(again["already_exists"])
             self.assertEqual(Path(again["dest_path"]).resolve(), added.resolve())
             self.assertEqual(again["relative_path"], f"{paj.name}/{added.name}")
+
+    def test_add_to_set_from_ready_uses_zouk_directory_sort(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ready = root / "Cues" / "Ready For Sort"
+            zouk = root / "Zouk" / "Neo Zouk"
+            sets = root / "Sets" / "Pajamathon 2026"
+            ready.mkdir(parents=True)
+            zouk.mkdir(parents=True)
+            sets.mkdir(parents=True)
+            src = ready / "Linker - Magic Garden.mp3"
+            lib = zouk / "Linker - Magic Garden.mp3"
+            src.write_bytes(b"ready")
+            lib.write_bytes(b"lib")
+            db = root / "database.xml"
+            db.write_bytes(
+                (
+                    "<VirtualDJ_Database>\r\n"
+                    f'<Song FilePath="{src.resolve()}">\r\n'
+                    '  <Tags Author="Linker" Title="Magic Garden" User2="Neo Zouk" />\r\n'
+                    '  <Infos SongLength="10" UserColor="4294902015" />\r\n'
+                    '  <Scan Bpm="0.750" Phase="61.8" />\r\n'
+                    '  <Poi Pos="61.8" Type="beatgrid" />\r\n'
+                    '  <Poi Name="Beat Entry" Pos="61.8" Num="1" Color="4278255360" Type="cue" />\r\n'
+                    "</Song>\r\n"
+                    "</VirtualDJ_Database>\r\n"
+                ).encode("utf-8")
+            )
+            with patch.object(
+                relocate_mod, "LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch(
+                "sorter.library.LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch.object(
+                relocate_mod, "CUES_SORTED", root / "Cues Sorted"
+            ), patch.object(
+                relocate_mod, "READY_FOR_SORT", ready
+            ), patch.object(
+                relocate_mod, "ADD_CUES", root / "Add Cues"
+            ), patch.object(
+                relocate_mod, "SETS_ROOT", root / "Sets"
+            ), patch(
+                "sorter.library.SETS_ROOT", root / "Sets"
+            ), patch.object(
+                relocate_mod, "VDJ_DATABASE", db
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ), patch(
+                "vdj_database_safety.is_virtualdj_running", return_value=False
+            ):
+                result = relocate_mod.add_track_to_event_set(
+                    src, sets_root=root / "Sets", database_path=db, create_backup=False
+                )
+            dest = Path(result["dest_path"])
+            text = db.read_text(encoding="utf-8")
+            dest_at = text.index(str(dest.resolve()))
+            dest_block = text[dest_at : text.index("</Song>", dest_at)]
+            src_at = text.index(str(src.resolve()))
+            src_block = text[src_at : text.index("</Song>", src_at)]
+            self.assertIn('User2="Neo Zouk"', dest_block)
+            self.assertNotIn("Ready For Sort", dest_block.split("<Tags", 1)[-1])
+            self.assertIn('Name="Beat Entry"', dest_block)
+            self.assertIn('Name="Beat Entry"', src_block)
+            self.assertIn(str(src.resolve()), src_block)
+
+    def test_add_to_set_retries_clone_when_set_copy_is_thin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zouk = root / "Zouk" / "Meridyun"
+            sets = root / "Sets" / "Pajamathon 2026"
+            zouk.mkdir(parents=True)
+            sets.mkdir(parents=True)
+            src = zouk / "Slipping Through.wav"
+            dest = sets / "462. Slipping Through.wav"
+            src.write_bytes(b"src")
+            dest.write_bytes(b"dest")
+            db = root / "database.xml"
+            db.write_bytes(
+                (
+                    "<VirtualDJ_Database>\r\n"
+                    f'<Song FilePath="{src.resolve()}">\r\n'
+                    '  <Tags Author="A" Title="Slipping" User2="Meridyun" />\r\n'
+                    '  <Infos SongLength="10" UserColor="4278255360" />\r\n'
+                    '  <Scan Bpm="0.75" Phase="0.6" />\r\n'
+                    '  <Poi Pos="0.6" Type="beatgrid" />\r\n'
+                    '  <Poi Name="Beat Entry" Pos="0.6" Num="1" Color="4278255360" Type="cue" />\r\n'
+                    "</Song>\r\n"
+                    f'<Song FilePath="{dest.resolve()}">\r\n'
+                    '  <Tags Author="A" Title="Slipping" TrackNumber="462" />\r\n'
+                    '  <Infos SongLength="10" UserColor="1" />\r\n'
+                    "</Song>\r\n"
+                    "</VirtualDJ_Database>\r\n"
+                ).encode("utf-8")
+            )
+            with patch.object(
+                relocate_mod, "LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch(
+                "sorter.library.LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch.object(
+                relocate_mod, "CUES_SORTED", root / "Cues Sorted"
+            ), patch.object(
+                relocate_mod, "READY_FOR_SORT", root / "Ready For Sort"
+            ), patch.object(
+                relocate_mod, "ADD_CUES", root / "Add Cues"
+            ), patch.object(
+                relocate_mod, "SETS_ROOT", root / "Sets"
+            ), patch(
+                "sorter.library.SETS_ROOT", root / "Sets"
+            ), patch.object(
+                relocate_mod, "VDJ_DATABASE", db
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ), patch(
+                "vdj_database_safety.is_virtualdj_running", return_value=False
+            ):
+                result = relocate_mod.add_track_to_event_set(
+                    src, sets_root=root / "Sets", database_path=db, create_backup=False
+                )
+            self.assertTrue(result["already_exists"])
+            self.assertGreaterEqual(result["copied_cues"], 1)
+            text = db.read_text(encoding="utf-8")
+            dest_at = text.index(str(dest.resolve()))
+            dest_block = text[dest_at : text.index("</Song>", dest_at)]
+            self.assertIn('Name="Beat Entry"', dest_block)
+            self.assertIn('User2="Meridyun"', dest_block)
+            self.assertIn('UserColor="4278255360"', dest_block)
+            self.assertIn(str(src.resolve()), text)
+
+    def test_inject_replaces_placeholder_usercolor_on_library_dest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ready = root / "Ready For Sort"
+            zouk = root / "Zouk" / "Chill" / "Deep"
+            ready.mkdir(parents=True)
+            zouk.mkdir(parents=True)
+            src = ready / "Moon.flac"
+            dest = zouk / "Moon.flac"
+            src.write_bytes(b"ready")
+            dest.write_bytes(b"lib")
+            db = root / "database.xml"
+            db.write_bytes(
+                (
+                    "<VirtualDJ_Database>\r\n"
+                    f'<Song FilePath="{src.resolve()}">\r\n'
+                    '  <Tags Author="A" Title="Moon" User2="Chill/Deep" />\r\n'
+                    '  <Infos SongLength="10" UserColor="4278190335" />\r\n'
+                    '  <Poi Name="Intro" Pos="0.1" Num="1" Color="4278190335" Type="cue" />\r\n'
+                    "</Song>\r\n"
+                    f'<Song FilePath="{dest.resolve()}">\r\n'
+                    '  <Tags Author="A" Title="Moon" User2="Pajamathon 2026" />\r\n'
+                    '  <Infos SongLength="10" UserColor="1" />\r\n'
+                    '  <Scan Bpm="0.5" />\r\n'
+                    "</Song>\r\n"
+                    "</VirtualDJ_Database>\r\n"
+                ).encode("utf-8")
+            )
+            with patch.object(
+                relocate_mod, "LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch.object(relocate_mod, "CUES_SORTED", root / "Cues Sorted"), patch.object(
+                relocate_mod, "READY_FOR_SORT", ready
+            ), patch.object(
+                relocate_mod, "ADD_CUES", root / "Add Cues"
+            ), patch.object(
+                relocate_mod, "SETS_ROOT", root / "Sets"
+            ), patch.object(
+                relocate_mod, "VDJ_DATABASE", db
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ), patch(
+                "vdj_database_safety.is_virtualdj_running", return_value=False
+            ):
+                result = relocate_mod.copy_cues_to_placement(
+                    src, dest, database_path=db, create_backup=False
+                )
+            self.assertEqual(result["mode"], "injected")
+            text = db.read_text(encoding="utf-8")
+            dest_at = text.index(str(dest.resolve()))
+            dest_block = text[dest_at : text.index("</Song>", dest_at)]
+            self.assertIn('Name="Intro"', dest_block)
+            self.assertIn('User2="Chill/Deep"', dest_block)
+            self.assertNotIn('User2="Pajamathon 2026"', dest_block)
+            self.assertIn('UserColor="4278190335"', dest_block)
+            self.assertNotIn('UserColor="1"', dest_block)
+            self.assertIn('Bpm="0.5"', dest_block)
+
+    def test_add_to_set_clones_cues_colors_grid_and_directory_sort(self) -> None:
+        """Sets copies must show source cues, cue colors, title color, and User2 in VDJ."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zouk = root / "Zouk" / "Neo Zouk"
+            sets = root / "Sets" / "Pajamathon 2026"
+            zouk.mkdir(parents=True)
+            sets.mkdir(parents=True)
+            src = zouk / "Linker - Magic Garden (NeoZouk) - 8744.mp3"
+            src.write_bytes(b"audio")
+            db = root / "database.xml"
+            db.write_bytes(
+                (
+                    "<VirtualDJ_Database>\r\n"
+                    f'<Song FilePath="{src.resolve()}">\r\n'
+                    '  <Tags Author="Linker" Title="Magic Garden" User2="Neo Zouk" />\r\n'
+                    '  <Infos SongLength="10" UserColor="4294902015" />\r\n'
+                    '  <Scan Bpm="0.750" Phase="61.803764" />\r\n'
+                    '  <Poi Pos="61.803764" Type="beatgrid" />\r\n'
+                    '  <Poi Name="Beat Entry" Pos="61.803764" Num="1" Color="4278255360" Type="cue" />\r\n'
+                    '  <Poi Name="Voice" Pos="97.803764" Num="2" Color="4294967040" Type="cue" />\r\n'
+                    '  <Poi Name="Groove Loop" Pos="61.803764" Num="-1" Color="4278255360" Type="loop" Size="8.0" Slot="1" />\r\n'
+                    "</Song>\r\n"
+                    "</VirtualDJ_Database>\r\n"
+                ).encode("utf-8")
+            )
+            with patch.object(
+                relocate_mod, "LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch.object(relocate_mod, "CUES_SORTED", root / "Cues Sorted"), patch.object(
+                relocate_mod, "READY_FOR_SORT", root / "Ready For Sort"
+            ), patch.object(
+                relocate_mod, "ADD_CUES", root / "Add Cues"
+            ), patch.object(
+                relocate_mod, "SETS_ROOT", root / "Sets"
+            ), patch(
+                "sorter.library.SETS_ROOT", root / "Sets"
+            ), patch.object(
+                relocate_mod, "VDJ_DATABASE", db
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ), patch(
+                "vdj_database_safety.is_virtualdj_running", return_value=False
+            ):
+                result = relocate_mod.add_track_to_event_set(
+                    src, sets_root=root / "Sets", database_path=db, create_backup=False
+                )
+            dest = Path(result["dest_path"])
+            self.assertTrue(dest.is_file())
+            self.assertEqual(result["copied_cues"], 2)
+            self.assertEqual(result["copied_loops"], 1)
+            text = db.read_text(encoding="utf-8")
+            dest_at = text.index(str(dest.resolve()))
+            dest_block = text[dest_at : text.index("</Song>", dest_at)]
+            self.assertIn('Name="Beat Entry"', dest_block)
+            self.assertIn('Color="4278255360"', dest_block)
+            self.assertIn('Color="4294967040"', dest_block)
+            self.assertIn('Type="loop"', dest_block)
+            self.assertIn('Type="beatgrid"', dest_block)
+            self.assertIn('Phase="61.803764"', dest_block)
+            self.assertIn('User2="Neo Zouk"', dest_block)
+            self.assertIn('UserColor="4294902015"', dest_block)
+            self.assertNotIn('User2="Pajamathon 2026"', dest_block)
+
+    def test_copy_cues_replaces_thin_set_scan_with_source_song(self) -> None:
+        """VDJ-scanned set copies keep event User2 and a wrong grid; replace the Song."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zouk = root / "Zouk" / "Neo Zouk"
+            sets = root / "Sets" / "Pajamathon 2026"
+            zouk.mkdir(parents=True)
+            sets.mkdir(parents=True)
+            src = zouk / "Linker - Magic Garden.mp3"
+            dest = sets / "465. Linker - Magic Garden.mp3"
+            src.write_bytes(b"a")
+            dest.write_bytes(b"b")
+            db = root / "database.xml"
+            db.write_bytes(
+                (
+                    "<VirtualDJ_Database>\r\n"
+                    f'<Song FilePath="{src.resolve()}">\r\n'
+                    '  <Tags Author="Linker" Title="Magic Garden" User2="Neo Zouk" />\r\n'
+                    '  <Infos SongLength="10" UserColor="4294902015" />\r\n'
+                    '  <Scan Bpm="0.750" Phase="61.803764" />\r\n'
+                    '  <Poi Pos="61.803764" Type="beatgrid" />\r\n'
+                    '  <Poi Name="Beat Entry" Pos="61.803764" Num="1" Color="4278255360" Type="cue" />\r\n'
+                    "</Song>\r\n"
+                    f'<Song FilePath="{dest.resolve()}" Flag="33554432">\r\n'
+                    '  <Tags Author="Linker" Title="Magic Garden" TrackNumber="465" User2="Pajamathon 2026" />\r\n'
+                    '  <Infos SongLength="10" UserColor="1" />\r\n'
+                    '  <Scan Bpm="0.749977" Phase="59.932289" />\r\n'
+                    '  <Poi Type="automix" Point="realStart" />\r\n'
+                    "</Song>\r\n"
+                    "</VirtualDJ_Database>\r\n"
+                ).encode("utf-8")
+            )
+            with patch.object(
+                relocate_mod, "LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch.object(relocate_mod, "CUES_SORTED", root / "Cues Sorted"), patch.object(
+                relocate_mod, "READY_FOR_SORT", root / "Ready For Sort"
+            ), patch.object(
+                relocate_mod, "ADD_CUES", root / "Add Cues"
+            ), patch.object(
+                relocate_mod, "SETS_ROOT", root / "Sets"
+            ), patch.object(
+                relocate_mod, "VDJ_DATABASE", db
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ), patch(
+                "vdj_database_safety.is_virtualdj_running", return_value=False
+            ):
+                result = relocate_mod.copy_cues_to_placement(
+                    src, dest, database_path=db, create_backup=False, overwrite=True
+                )
+            self.assertTrue(result["ok"])
+            text = db.read_text(encoding="utf-8")
+            dest_at = text.index(str(dest.resolve()))
+            dest_block = text[dest_at : text.index("</Song>", dest_at)]
+            self.assertIn('Name="Beat Entry"', dest_block)
+            self.assertIn('Color="4278255360"', dest_block)
+            self.assertIn('Type="beatgrid"', dest_block)
+            self.assertIn('Phase="61.803764"', dest_block)
+            self.assertIn('User2="Neo Zouk"', dest_block)
+            self.assertNotIn('User2="Pajamathon 2026"', dest_block)
+            self.assertIn('UserColor="4294902015"', dest_block)
+            self.assertNotIn('UserColor="1"', dest_block)
+            self.assertNotIn('Phase="59.932289"', dest_block)
+
+    def test_add_to_set_copies_directory_sort_without_cues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zouk = root / "Zouk" / "Chill" / "Deep"
+            sets = root / "Sets" / "Pajamathon 2026"
+            zouk.mkdir(parents=True)
+            sets.mkdir(parents=True)
+            src = zouk / "Moon.flac"
+            src.write_bytes(b"audio")
+            db = root / "database.xml"
+            db.write_bytes(
+                (
+                    "<VirtualDJ_Database>\r\n"
+                    f'<Song FilePath="{src.resolve()}">\r\n'
+                    '  <Tags Author="A" Title="Moon" User2="Chill/Deep" />\r\n'
+                    '  <Infos SongLength="10" UserColor="4278190335" />\r\n'
+                    '  <Scan Bpm="0.5" Phase="0.1" />\r\n'
+                    "</Song>\r\n"
+                    "</VirtualDJ_Database>\r\n"
+                ).encode("utf-8")
+            )
+            with patch.object(
+                relocate_mod, "LIBRARIES", {"Zouk": root / "Zouk", "House": root / "House"}
+            ), patch.object(relocate_mod, "CUES_SORTED", root / "Cues Sorted"), patch.object(
+                relocate_mod, "READY_FOR_SORT", root / "Ready For Sort"
+            ), patch.object(
+                relocate_mod, "ADD_CUES", root / "Add Cues"
+            ), patch.object(
+                relocate_mod, "SETS_ROOT", root / "Sets"
+            ), patch(
+                "sorter.library.SETS_ROOT", root / "Sets"
+            ), patch.object(
+                relocate_mod, "VDJ_DATABASE", db
+            ), patch(
+                "sorter.relocate.is_virtualdj_running", return_value=False
+            ), patch(
+                "vdj_database_safety.is_virtualdj_running", return_value=False
+            ):
+                result = relocate_mod.add_track_to_event_set(
+                    src, sets_root=root / "Sets", database_path=db, create_backup=False
+                )
+            dest = Path(result["dest_path"])
+            text = db.read_text(encoding="utf-8")
+            dest_at = text.index(str(dest.resolve()))
+            dest_block = text[dest_at : text.index("</Song>", dest_at)]
+            self.assertIn('User2="Chill/Deep"', dest_block)
+            self.assertIn('UserColor="4278190335"', dest_block)
 
     def test_add_track_refuses_parenthetical_and_version_set_copies(self):
         with tempfile.TemporaryDirectory() as tmp:

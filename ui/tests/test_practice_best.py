@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sorter.live_set_played import (
+    filter_best_items_hide_live_played,
+    practice_label_block_keys,
+)
 from sorter.transitions_db import (
     _ensure_score_columns,
     connect,
@@ -242,6 +246,43 @@ def test_excluded_mix_omitted_from_best_but_scores_remain(tmp_path: Path):
     set_practice_mix_exclude(real_set, False, db_path=db)
     restored = list_best_practice_scores(prefix="pj", db_path=db)
     assert {i["from_track"] for i in restored} == {"Changes Trimmed", "Practice A"}
+
+
+def test_best_list_can_hide_live_played_rows(tmp_path: Path):
+    db = tmp_path / "hide.db"
+    base = "/Users/kirilllanger/Music/Mixes"
+    _seed(
+        db,
+        [
+            {
+                "mix_path": f"{base}/pj2026-a.wav",
+                "from_track": "Reina - Burn",
+                "to_track": "dvsn - A Muse",
+                "transition_index": 0,
+                "at_sec": 10,
+                "overall": 8.0,
+                "save_for_set": 1,
+                "analyzed_at": "2026-08-28T10:00:00",
+            },
+            {
+                "mix_path": f"{base}/pj2026-b.wav",
+                "from_track": "Podval Capella - Risk",
+                "to_track": "Blvck Skyle - Kizombeat",
+                "transition_index": 0,
+                "at_sec": 20,
+                "overall": 8.5,
+                "save_for_set": 1,
+                "analyzed_at": "2026-08-29T10:00:00",
+            },
+        ],
+    )
+    items = list_best_practice_scores(prefix="pj", db_path=db)
+    keys = practice_label_block_keys("Reina - Burn")
+    visible, hidden = filter_best_items_hide_live_played(
+        items, hide=True, played_keys=keys
+    )
+    assert [i["from_track"] for i in visible] == ["Podval Capella - Risk"]
+    assert hidden == 1
 
 
 def test_annotate_mixes_marks_excluded(tmp_path: Path):

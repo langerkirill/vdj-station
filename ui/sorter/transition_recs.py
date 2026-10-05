@@ -59,8 +59,8 @@ BPM_TOLERANCE = float(os.getenv("MUSIC_SORTER_REC_BPM_TOLERANCE", "5"))
 MAX_CANDIDATES_TO_GEMINI = int(os.getenv("MUSIC_SORTER_REC_CANDIDATE_CAP", "48"))
 MAX_SCAN_SONGS = int(os.getenv("MUSIC_SORTER_REC_SCAN_CAP", "4000"))
 PICKS_PER_BUCKET = int(os.getenv("MUSIC_SORTER_REC_PICKS_PER_BUCKET", "5"))
-# Rolling calendar days ending today: Fri–Sat event plus the day before.
-REC_PLAY_WINDOW_DAYS = int(os.getenv("MUSIC_SORTER_REC_PLAY_WINDOW_DAYS", "3"))
+# Gig nights only (Friday + Saturday). Midweek History is not blocked.
+REC_PLAY_WINDOW_DAYS = int(os.getenv("MUSIC_SORTER_REC_PLAY_WINDOW_DAYS", "2"))
 
 
 class EnergyPickSchema(BaseModel):
@@ -443,7 +443,7 @@ def recent_play_windows(
     *,
     days: int = REC_PLAY_WINDOW_DAYS,
 ) -> dict[str, set[str]]:
-    """Identity keys for plays in the event window (today / yesterday / earlier)."""
+    """Identity keys for Friday/Saturday gig plays (today / yesterday / earlier)."""
     groups = recent_history_play_groups(days=days)
     today = played_today_block_keys(groups["today"])
     yesterday = played_today_block_keys(groups["yesterday"])
@@ -911,7 +911,7 @@ Genre / vibe rules (critical):
 Other rules:
 - ONLY use paths exactly as listed in candidates (copy path string verbatim).
 - NEVER recommend the CURRENT TRACK (or any library copy of it).
-- NEVER recommend a track already played in this event window (today, yesterday, and the day before — already removed from the pool).
+- NEVER recommend a track already played on this event's Friday or Saturday (already removed from the pool). Wednesday/Thursday plays are allowed.
 - Each track path may appear in AT MOST ONE bucket total (no repeats across higher/same/lower).
 - Every pick must stay in-key and within ±{BPM_TOLERANCE} BPM (already true of the list).
 - Prefer tracks with history×N when musical fit is equal.

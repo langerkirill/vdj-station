@@ -12,6 +12,17 @@ class AnalysisPostprocessMixin:
         stem_activity: Optional[Dict] = None,
     ) -> str:
         """Validate and correct color assignment based on elements"""
+        # Measured stems are authoritative: colors never come from Gemini.
+        if isinstance(stem_activity, dict) and (
+            "kick" in stem_activity or "hihat" in stem_activity
+        ):
+            from .stem_color import color_from_stems
+
+            return color_from_stems(stem_activity)[0]
+        if getattr(self, "_track_no_vocals", False):
+            elements = [e for e in elements if str(e).lower() != "vocals"]
+            if isinstance(stem_activity, dict):
+                stem_activity = {**stem_activity, "vocal": "none"}
         # Separate drums from light percussion
         has_drums = "drums" in elements
         has_light_percussion = "percussion" in elements and not has_drums
@@ -292,6 +303,10 @@ class AnalysisPostprocessMixin:
             )
 
             loop_name = loop_data.get("loop_name", "")
+            if loop_data.get("assertion_source") == "stem_scan_loop":
+                # Seam-tested typed loop (Melody/Drum/Vocal Loop): keep the name.
+                loop_data["loop_name"] = loop_name
+                continue
             if self._name_conflicts_with_elements(loop_name, elements):
                 loop_name = self._replacement_name(
                     loop_name, elements, is_loop=True
@@ -339,6 +354,10 @@ class AnalysisPostprocessMixin:
             start = self._safe_float(loop_data.get("start"))
             requested_beats = self._safe_int(loop_data.get("length_beats"), 16)
             if requested_beats <= 0:
+                continue
+            if loop_data.get("assertion_source") == "stem_scan_loop":
+                # Already seam-tested at exactly this start and length.
+                fixed_loops.append(loop_data)
                 continue
 
             max_duration = requested_beats * beat_duration

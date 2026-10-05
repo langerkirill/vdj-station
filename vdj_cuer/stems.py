@@ -12,11 +12,15 @@ from .loop_seam_gemini import (
     loop_seam_prompt,
     seam_half_seconds,
 )
+from .stem_color import color_from_stems
+from .cue_hygiene import late_by_phrases
 from .stem_evidence import (
     ACTIVITY_RANK,
     is_clean_phrase_entry,
     load_stem_profiles,
     loop_is_stable,
+    loop_likelihood,
+    loop_type_scores,
     loop_seam_is_clean,
     measure_stem_evidence,
 )
@@ -25,11 +29,24 @@ from .stem_evidence import (
 def _max_loop_beats_for_tempo(beat_duration: float) -> int:
     """Longest allowed loop length in beats for this tempo."""
     if beat_duration <= 0:
-        return 16
-    for beats in (32, 16, 8, 4):
+        return 32
+    for beats in (64, 32):
         if beats * beat_duration <= MAX_LOOP_DURATION_SECONDS:
             return beats
-    return 8
+    return 32
+
+
+def _seam_windows():
+    raw = os.environ.get("AUTOCUE_SEAM_WINDOWS", "1,2")
+    try:
+        vals = tuple(float(x) for x in raw.split(",") if x.strip())
+    except ValueError:
+        vals = (1.0, 2.0)
+    return vals or (1.0, 2.0)
+
+
+LOOP_SEAM_WINDOWS = _seam_windows()  # seconds each side; loop must pass all
+MAX_LOOP_CANDIDATES_PER_SONG = 60  # Kirill 2026-10-03: 20-40, incl. x2 / half retries
 
 
 def _cap_loop_length_beats(length_beats: int, beat_duration: float) -> int:
@@ -37,9 +54,9 @@ def _cap_loop_length_beats(length_beats: int, beat_duration: float) -> int:
     try:
         beats = int(length_beats)
     except (TypeError, ValueError):
-        beats = 16
+        beats = 32
     if beats not in LOOP_BEAT_CHOICES:
-        beats = 16
+        beats = 32
     max_beats = _max_loop_beats_for_tempo(beat_duration)
     while beats > max_beats:
         beats = max(beats // 2, MIN_USEFUL_LOOP_BEATS)
@@ -283,6 +300,7 @@ class StemMixin:
         # offset_beats, optional length override (None = keep base)
         plan: List[Tuple[int, Optional[int]]] = [
             (0, None),
+            (0, base_beats * 2),
             (0, max(MIN_USEFUL_LOOP_BEATS, base_beats // 2)),
         ]
         placements: List[Tuple[float, int]] = []
@@ -313,6 +331,62 @@ class StemMixin:
         loop_name: str = "loop",
         attempt: int = 1,
         max_attempts: int = LOOP_SEAM_MAX_ATTEMPTS,
+        beat_seconds: Optional[float] = None,
+        profiles=None,
+    ) -> bool:
+        """Mandatory seam gate: numeric DSP score, then Gemini, at every window
+        in LOOP_SEAM_WINDOWS. All must pass. Result kept in self._last_seam."""
+        from .loop_seam_dsp import validate_loop_seam
+
+        self._last_seam = None
+        windows = []
+        for w in LOOP_SEAM_WINDOWS:
+            eff = seam_half_seconds(loop_duration, w)
+            if eff >= LOOP_SEAM_MIN_HALF_SECONDS and not any(abs(eff - x[1]) < 0.05 for x in windows):
+                windows.append((w, eff))
+        if not windows or not audio_file_path:
+            return False  # cannot be tested -> cannot be written
+        record = {"passed": False, "windows": {}, "wavs": []}
+        for w, eff in windows:
+            try:
+                dsp = validate_loop_seam(
+                    audio_file_path, float(loop_start), float(loop_duration),
+                    beat_seconds=float(beat_seconds or (loop_duration / 8.0)),
+                    window=w, profiles=profiles,
+                    save_name=f"{os.path.splitext(os.path.basename(audio_file_path))[0][:40]}_{loop_start:.3f}_{loop_duration:.2f}s",
+                )
+            except Exception as error:
+                print(f"  ⚠️  Seam scorer error for '{loop_name}' ({error}) — loop refused")
+                return False
+            print(f"  📐 seam scores {eff:.2f}s '{loop_name}' @ {loop_start:.3f}s: {dsp.summary()}")
+            record["windows"][f"{w:g}"] = {"scores": dsp.scores, "failures": dsp.failures}
+            if dsp.wav_path:
+                record["wavs"].append(dsp.wav_path)
+            if not dsp.passed:
+                return False
+            ok = self._evaluate_loop_seam_once(
+                audio_file_path, loop_start, loop_duration,
+                loop_name=loop_name, attempt=attempt, max_attempts=max_attempts,
+                seam_seconds=w,
+            )
+            print(f"  📏 seam window {eff:.2f}s each side (asked {w:g}s) for '{loop_name}': {'PASS' if ok else 'FAIL'}")
+            if not ok:
+                return False
+        record["passed"] = True
+        record["thresholds"] = dict(__import__("vdj_cuer.loop_seam_dsp", fromlist=["THRESHOLDS"]).THRESHOLDS)
+        self._last_seam = record
+        return True
+
+    def _evaluate_loop_seam_once(
+        self,
+        audio_file_path: Optional[str],
+        loop_start: float,
+        loop_duration: float,
+        *,
+        loop_name: str = "loop",
+        attempt: int = 1,
+        max_attempts: int = LOOP_SEAM_MAX_ATTEMPTS,
+        seam_seconds: float = 2.0,
     ) -> bool:
         """Listen to end→start splice via Gemini (last ~3s + first ~3s).
 
@@ -325,7 +399,7 @@ class StemMixin:
         if not self._gemini_loop_seam_available():
             return True
 
-        half = seam_half_seconds(loop_duration)
+        half = seam_half_seconds(loop_duration, seam_seconds)
         if half < LOOP_SEAM_MIN_HALF_SECONDS:
             return True
 
@@ -336,6 +410,7 @@ class StemMixin:
                 audio_file_path,
                 float(loop_start),
                 float(loop_duration),
+                seam_seconds=float(seam_seconds),
             )
             uploaded = self._upload_audio_file_with_retry(clip_path)
             judgment = self._generate_json_content(
@@ -402,10 +477,24 @@ class StemMixin:
         gemini_attempts = 0
         last_stem_fail = "no placement"
 
+        if not hasattr(self, "_loop_seen") or self._loop_seen is None:
+            self._loop_seen = set()
+        tried = self._loop_seen  # per song: never score the same (start, beats) twice
         for candidate_start, candidate_beats in placements:
             if gemini_attempts >= LOOP_SEAM_MAX_ATTEMPTS:
                 break
             candidate_beats = _cap_loop_length_beats(candidate_beats, beat_duration)
+            _key = (int(round(float(candidate_start) * 1000)), int(candidate_beats))
+            if _key in tried:
+                continue
+            if getattr(self, "_loop_candidates_tried", 0) >= MAX_LOOP_CANDIDATES_PER_SONG:
+                print(
+                    f"  🛑 Loop search cap reached ({MAX_LOOP_CANDIDATES_PER_SONG} "
+                    "distinct candidates) — no more loop attempts for this song"
+                )
+                return None
+            tried.add(_key)
+            self._loop_candidates_tried = getattr(self, "_loop_candidates_tried", 0) + 1
             duration_seconds = max(4.0, float(candidate_beats) * beat_duration)
             evidence = measure_stem_evidence(
                 profiles,
@@ -435,7 +524,10 @@ class StemMixin:
                 last_stem_fail = "stem seam"
                 continue
 
-            if require_gemini_seam and audio_file_path:
+            if not audio_file_path:
+                last_stem_fail = "no audio for seam test"
+                continue
+            if True:  # the seam gate is mandatory
                 gemini_attempts += 1
                 gemini_ok = bool(
                     self._evaluate_loop_seam_with_gemini(
@@ -445,15 +537,19 @@ class StemMixin:
                         loop_name=loop_name,
                         attempt=gemini_attempts,
                         max_attempts=LOOP_SEAM_MAX_ATTEMPTS,
+                        beat_seconds=float(beat_duration),
+                        profiles=profiles,
                     )
                 )
                 if not gemini_ok:
-                    # Stem stability + seam already passed. Do not drop-all
-                    # loops just because Gemini is down or disagrees.
+                    # Kirill 2026-10-03: only loops that pass the seam test.
+                    # Retry the same start with doubled/halved beats first.
                     print(
-                        f"  ⚠️  Gemini wrap failed for '{loop_name}' — "
-                        "keeping stem-clean loop"
+                        f"  ↻ Seam failed for '{loop_name}' @ {candidate_start:.3f}s "
+                        f"x{candidate_beats} beats — trying next length on the same 1"
                     )
+                    last_stem_fail = "gemini seam"
+                    continue
             else:
                 gemini_ok = False
 
@@ -479,6 +575,7 @@ class StemMixin:
             }
             if gemini_ok:
                 result["gemini_seam"] = True
+                result["seam"] = getattr(self, "_last_seam", None)
             if abs(candidate_start - float(start)) > 1e-6 or candidate_beats != base_beats:
                 result["seam_retry"] = {
                     "original_start": round(float(start), 6),
@@ -529,6 +626,19 @@ class StemMixin:
             profiles = cache.get_or_load_stem_profiles(list(stem_files))
         else:
             profiles = load_stem_profiles(stem_files)
+        self._loop_candidates_tried = 0
+        self._loop_seen = set()
+        self._phase_origin = (
+            float(self.get_beatgrid_offset(audio_file_path) or 0.0) if audio_file_path else None
+        )
+        from .vocal_gate import apply_track_vocal_gate, track_is_instrumental
+
+        self._track_no_vocals = track_is_instrumental(analysis_data, audio_file_path or "")
+        if self._track_no_vocals:
+            print("  🎻 Track is instrumental (analysis/note): vocal stem ignored")
+            profiles = apply_track_vocal_gate(profiles, analysis_data, audio_file_path or "")
+        self._final_stem_profiles = profiles
+        self._final_stem_audio = audio_file_path
         actual_bpm = self._actual_bpm(bpm) or 120.0
         beat_duration = 60.0 / actual_bpm
         cue_window = 4.0
@@ -614,10 +724,18 @@ class StemMixin:
                 )
                 # Gate on measured stem activity, not optimistic model scores.
                 cue_data["confidence"] = _stem_gate_confidence(evidence)
-                cue_data["color"] = self.validate_color_assignment(
-                    list(evidence.elements),
-                    cue_data.get("color") or "green",
-                    evidence.activity,
+                _gem_color = cue_data.get("color")
+                _color, _why = color_from_stems(evidence.activity)
+                cue_data["color"] = _color
+                cue_data["color_source"] = "stems"
+                cue_data["color_reason"] = _why
+                _act = evidence.activity
+                print(
+                    f"  🎨 cue {float(timestamp):8.3f}s  "
+                    f"kick={_act.get('kick','-'):6} hat={_act.get('hihat','-'):6} "
+                    f"vox={_act.get('vocal','-'):6} bass={_act.get('bass','-'):6} "
+                    f"inst={_act.get('instruments','-'):6} -> {_color:6} "
+                    f"({_why}; stems=yes; gemini said {_gem_color})"
                 )
                 if not is_clean_phrase_entry(
                     profiles,
@@ -648,6 +766,8 @@ class StemMixin:
                     key=lambda cue: float(cue.get("timestamp", 0.0)),
                 )[:6]
 
+        # Loops come only from the per-type stem search below (Melody/Drum/Vocal).
+        analysis_data["loop_segments"] = []
         stable_loops = []
         for loop_data in analysis_data.get("loop_segments", []):
             timestamp = loop_data.get("start")
@@ -717,15 +837,7 @@ class StemMixin:
                     )
 
             analysis_data["loop_segments"] = stable_loops[:TARGET_MAX_LOOPS]
-            analysis_data = self._ensure_minimum_loops(
-                analysis_data,
-                profiles=profiles,
-                beat_duration=beat_duration,
-                song_length=self._loop_discovery_song_length(
-                    analysis_data, profiles
-                ),
-                audio_file_path=audio_file_path,
-            )
+            # No forced minimum: zero to three seam-clean loops (Kirill 2026-10-03).
             kept = len(analysis_data.get("loop_segments") or [])
             if kept < TARGET_MIN_LOOPS:
                 print(
@@ -989,9 +1101,16 @@ class StemMixin:
         step_duration = beat_duration * float(PHRASE_BEATS)
         candidates: List[Dict] = []
         max_beats = _max_loop_beats_for_tempo(beat_duration)
-        origin = float(transitions[0]) if transitions else 0.0
+        origin = getattr(self, "_phase_origin", None)
+        if origin is None:
+            origin = float(transitions[0]) if transitions else 0.0
+        origin = float(origin)
         # Prefer shorter lengths first; skip 32-beat on slow tracks (too long).
-        length_order = tuple(b for b in (8, 16, 32) if b <= max_beats)
+        # Kirill 2026-10-04 (round 2): 16 beats minimum, 32 preferred, 64 allowed, never 8.
+        length_order = tuple(b for b in (32, 64, 16) if b <= max_beats)
+        # A loop belongs to the cue that opens its section: starts on a cue (or the
+        # disk 1) are "anchored"; starts 1-2 phrases after one are "late" and excluded.
+        anchors = sorted(set(transitions) | {origin})
         for beats in length_order:
             duration_seconds = beats * beat_duration
             if duration_seconds >= song_length - 4.0:
@@ -1040,6 +1159,7 @@ class StemMixin:
                 )
                 # Prefer downbeats in ranking without requiring them.
                 beat_index = int(round(start / beat_duration)) % 4
+                _late = late_by_phrases(anchors, start, beat_duration)
                 candidates.append(
                     {
                         "start": round(start, 6),
@@ -1056,69 +1176,161 @@ class StemMixin:
                         "assertion_source": "stem_scan_loop",
                         "model_confidence": 0.0,
                         "on_downbeat": beat_index == 0,
+                        "anchored": any(abs(start - a) <= 0.25 for a in anchors),
+                        "late_k": _late[1] if _late else None,
+                        "likelihood": loop_likelihood(
+                            profiles, start, duration_seconds, beat_duration, transitions
+                        ),
                     }
                 )
                 start += step_duration
 
-        # Rank: sparse components, early intro, downbeat preferred, 8-beat
-        # melodic, then classic 16, then later full arrangements.
-        beat_preference = {8: 0, 16: 1, 32: 2}
-
-        def sort_key(item: Dict):
-            elements = list(item.get("elements", []))
-            start = float(item.get("start", 0.0))
-            beats = int(item.get("length_beats", 16))
-            melodic_intro = (
-                start <= intro_horizon
-                and self._is_melody_only(elements)
-                and beats <= 16
+        # Kirill 2026-10-03: at most one Melody, one Drum, one Vocal loop, each
+        # seam-tested; rank candidates per type by how typical they are of the
+        # type plus loop_likelihood. Vocals are a ranking hint, not a filter.
+        late_skipped = [c for c in candidates if c.get("late_k")]
+        if late_skipped:
+            print(
+                f"  ⏪ {len(late_skipped)} loop candidate(s) sat 1-2 phrases after their "
+                "section cue -- scoring the cue's own phrase [1] instead"
             )
-            return (
-                0 if melodic_intro else 1,
-                len(elements),
-                0 if start <= intro_horizon else 1,
-                0 if item.get("on_downbeat") else 1,
-                beat_preference.get(beats, 9),
-                start,
+        candidates = [c for c in candidates if not c.get("late_k")]
+        for item in candidates:
+            sc = loop_type_scores(
+                profiles,
+                float(item["start"]),
+                int(item["length_beats"]) * beat_duration,
             )
+            item["type_scores"] = sc
+        pools = {
+            "Vocal": [c for c in candidates if c["type_scores"]["vocal"] >= 0.25],
+            "Drum": [
+                c for c in candidates
+                if c["type_scores"]["drum"] >= 0.3
+                and c["type_scores"]["drum"] > c["type_scores"]["melody"]
+            ],
+            "Melody": [
+                c for c in candidates
+                if c["type_scores"]["melody"] >= 0.25
+                and c["type_scores"]["melody"] >= 0.6 * c["type_scores"]["drum"]
+            ],
+        }
 
-        candidates.sort(key=sort_key)
+        # Kirill 2026-10-04: loops in down sections (no/low drums) are wanted too.
+        pools["Breakdown"] = [
+            c for c in candidates
+            if c["type_scores"]["drum"] < 0.2
+            and max(c["type_scores"]["melody"], c["type_scores"]["vocal"]) >= 0.2
+        ]
+
+        def purity(kind: str, item: Dict) -> float:
+            sc = item["type_scores"]
+            if kind == "Breakdown":
+                typ = max(sc["melody"], sc["vocal"]) - sc["drum"]
+            elif kind == "Vocal":
+                typ = sc["vocal"]
+            elif kind == "Drum":
+                typ = sc["drum"] - sc["melody"]
+            else:
+                typ = sc["melody"] - 0.5 * sc["drum"]
+            length_bonus = {32: 0.10, 64: 0.0, 16: -0.05}.get(int(item["length_beats"]), 0.0)
+            anchor_bonus = 0.20 if item.get("anchored") else 0.0
+            return 0.5 * typ + 0.5 * float(item.get("likelihood", 0.0)) + length_bonus + anchor_bonus
+
         selected: List[Dict] = []
         min_spacing = beat_duration * 12.0
-        # Cap how many ranked candidates enter the wrap-retry path (API cost).
-        check_budget = (
-            LOOP_SEAM_GEMINI_MAX_CHECKS
-            if gemini_check_budget is None
-            else int(gemini_check_budget)
-        )
-        candidates_tried = 0
-        for candidate in candidates:
-            start = float(candidate["start"])
-            if any(abs(start - float(item["start"])) < min_spacing for item in selected):
-                continue
-            if audio_file_path:
-                if candidates_tried >= check_budget:
+        per_type_budget = 24
+        # Kirill 2026-10-04: loops never overlap; at most one per type and 3 in total
+        # (Melody, Drum, Breakdown, then Vocal only when the vocal is real).
+        loops_per_type = 1
+        max_total_loops = 3
+        if not audio_file_path:
+            return []
+        for kind in ("Melody", "Drum", "Breakdown", "Vocal"):
+            if len(selected) >= max_total_loops:
+                break
+            pool = sorted(pools[kind], key=lambda c: -purity(kind, c))
+            used_before = getattr(self, "_loop_candidates_tried", 0)
+            found_n = 0
+            print(f"  🔎 {kind} loop: {len(pool)} candidate spot(s), best first")
+            for candidate in pool:
+                if found_n >= (1 if kind == "Breakdown" else loops_per_type):
                     break
-                candidates_tried += 1
-                # Up to 3 wrap attempts (original + beat nudges) per candidate.
+                if getattr(self, "_loop_candidates_tried", 0) - used_before >= per_type_budget:
+                    break
+                if getattr(self, "_loop_candidates_tried", 0) >= MAX_LOOP_CANDIDATES_PER_SONG:
+                    break
+                start = float(candidate["start"])
+                cand_end = start + int(candidate["length_beats"]) * beat_duration
+                if any(
+                    start < float(it["start"]) + int(it["length_beats"]) * beat_duration + beat_duration
+                    and float(it["start"]) < cand_end + beat_duration
+                    for it in selected
+                ):
+                    continue  # overlaps (or touches) a loop already picked
                 accepted = self._validate_loop_candidate(
                     profiles=profiles,
                     start=start,
                     length_beats=int(candidate["length_beats"]),
                     beat_duration=beat_duration,
                     model_elements=list(candidate.get("elements") or []),
-                    loop_name=str(candidate.get("loop_name") or "loop"),
+                    loop_name=f"{kind} Loop",
+                    audio_file_path=audio_file_path,
+                    require_gemini_seam=require_gemini_seam,
+                )
+                if accepted is None:
+                    continue
+                found_n += 1
+                accepted["assertion_source"] = "stem_scan_loop"
+                accepted["loop_name"] = f"{kind} Loop" if found_n == 1 else f"{kind} Loop {found_n}"
+                accepted["loop_type"] = kind
+                selected.append(accepted)
+            if found_n == 0:
+                print(f"  ➖ No seam-clean {kind} loop found — none written for this type")
+        if len(selected) < TARGET_MIN_LOOPS and audio_file_path:
+            # Seam test rejected the typed picks: retry other phrase-aligned 16/32/64-beat
+            # candidates, stable-drum sections first, before accepting fewer than 2.
+            def _fallback_rank(c):
+                sc = c["type_scores"]
+                drums_stable = 1 if sc["drum"] >= 0.3 else 0
+                return (-drums_stable, -purity("Drum" if drums_stable else "Melody", c))
+
+            tried_starts = {round(float(l["start"]), 3) for l in selected}
+            pool = sorted(candidates, key=_fallback_rank)
+            used_before = getattr(self, "_loop_candidates_tried", 0)
+            print(f"  🔁 Only {len(selected)} loop(s): retrying {len(pool)} other phrase-aligned candidate(s)")
+            for candidate in pool:
+                if len(selected) >= TARGET_MIN_LOOPS:
+                    break
+                if getattr(self, "_loop_candidates_tried", 0) - used_before >= per_type_budget:
+                    break
+                if getattr(self, "_loop_candidates_tried", 0) >= MAX_LOOP_CANDIDATES_PER_SONG:
+                    break
+                start = float(candidate["start"])
+                cand_end = start + int(candidate["length_beats"]) * beat_duration
+                if round(start, 3) in tried_starts or any(
+                    start < float(it["start"]) + int(it["length_beats"]) * beat_duration + beat_duration
+                    and float(it["start"]) < cand_end + beat_duration
+                    for it in selected
+                ):
+                    continue
+                accepted = self._validate_loop_candidate(
+                    profiles=profiles,
+                    start=start,
+                    length_beats=int(candidate["length_beats"]),
+                    beat_duration=beat_duration,
+                    model_elements=list(candidate.get("elements") or []),
+                    loop_name=f"{self._loop_discovery_label(list(candidate.get('elements') or []))} Loop",
                     audio_file_path=audio_file_path,
                     require_gemini_seam=require_gemini_seam,
                 )
                 if accepted is None:
                     continue
                 accepted["assertion_source"] = "stem_scan_loop"
-                if candidate.get("loop_name"):
-                    accepted["loop_name"] = candidate["loop_name"]
+                accepted["loop_type"] = "Fallback"
                 selected.append(accepted)
-            else:
-                selected.append(candidate)
-            if len(selected) >= max_loops:
-                break
+        print(
+            f"  🔁 Loops: {[ (l['loop_name'], l['start'], l['length_beats']) for l in selected ]} "
+            f"({getattr(self, '_loop_candidates_tried', 0)} distinct candidates scored)"
+        )
         return selected

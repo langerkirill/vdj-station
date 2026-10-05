@@ -1,5 +1,5 @@
 /* Domain homes (not this file): state.js, transport.js, waveform.js,
-   practice.js, assemble.js, placements.js, status_handoff.js */
+   practice.js, assemble.js, stems.js, placements.js, status_handoff.js */
 const MusicSorterState =
   (typeof globalThis !== "undefined" && globalThis.MusicSorterState) ||
   (typeof window !== "undefined" && window.MusicSorterState);
@@ -19,6 +19,10 @@ const MusicSorterPractice =
 const MusicSorterAssemble =
   (typeof globalThis !== "undefined" && globalThis.MusicSorterAssemble) ||
   (typeof window !== "undefined" && window.MusicSorterAssemble);
+
+const MusicSorterStems =
+  (typeof globalThis !== "undefined" && globalThis.MusicSorterStems) ||
+  (typeof window !== "undefined" && window.MusicSorterStems);
 
 const state = MusicSorterState.state;
 
@@ -108,6 +112,12 @@ function isSetOverviewMode() {
   return typeof MusicSorterState.isSetOverviewMode === "function"
     ? MusicSorterState.isSetOverviewMode()
     : state.mode === "set_overview";
+}
+
+function isStemsMode() {
+  return typeof MusicSorterState.isStemsMode === "function"
+    ? MusicSorterState.isStemsMode()
+    : state.mode === "stems";
 }
 
 function setTrackDir(track) {
@@ -407,6 +417,14 @@ function practiceTimeToX(t, slots, contentW, duration, padX = 10) {
 
 function practiceXToTime(x, slots, contentW, duration, padX = 10) {
   return MusicSorterPractice.practiceXToTime(x, slots, contentW, duration, padX);
+}
+
+function visibleBestPracticeItems(items, hidePlayed) {
+  return MusicSorterPractice.visibleBestPracticeItems(items, hidePlayed);
+}
+
+function bestPracticeHiddenCount(items, hidePlayed) {
+  return MusicSorterPractice.bestPracticeHiddenCount(items, hidePlayed);
 }
 
 let _practiceWaveScrollMix = null;
@@ -2295,15 +2313,17 @@ async function retryCuesForTrack(track, writeScope = "all", opts = {}) {
       stopRetryPollForPath(pathKey);
       delete state.retryJobs[pathKey];
       syncAutocueUi();
-      applyIfCurrent(() =>
-        setRetryStatus(job.message || "Skipped — fix beatgrid first", "error")
-      );
-      setStatus(
-        job.message
-          ? `${track.name}: ${job.message}`
-          : `AutoCue skipped: ${track.name}`,
-        "error"
-      );
+      const needsStems =
+        job.preflight &&
+        job.preflight.has_stems === false &&
+        (job.write_scope || "all") !== "cues";
+      const skipMsg =
+        job.message ||
+        (needsStems
+          ? "Go make stems in VirtualDJ first, then AutoCue again."
+          : "Skipped — fix beatgrid first");
+      applyIfCurrent(() => setRetryStatus(skipMsg, "error"));
+      setStatus(`${track.name}: ${skipMsg}`, "error");
       if (job.preflight && currentTrack()?.path === pathKey) {
         state.gridPreflight = job.preflight;
         renderGridPreflightCard(track);
@@ -6157,6 +6177,23 @@ function updatePipelineStrip() {
     next.textContent = assembleJobBusy(job) ? "Scoring chunks…" : "Build 300–500";
     return;
   }
+  if (isStemsMode()) {
+    kicker.textContent = "Stems";
+    title.textContent = "Vocal-layer hole check";
+    const job = state.stemAuditJob;
+    const n = state.stemInventory?.sidecar_count;
+    hint.textContent = job
+      ? job.message || `${job.broken_count || 0} broken · ${job.checked || 0} checked`
+      : n != null
+        ? `${n} .vdjstems sidecars in DJ Music`
+        : "Scan sidecars for digital-mute vocal tiles";
+    next.textContent = MusicSorterStems.stemsJobBusy(job)
+      ? "Scanning…"
+      : job?.broken_count
+        ? "Review flagged files"
+        : "Scan DJ Music";
+    return;
+  }
   if (isRecsMode()) {
     kicker.textContent = "Recs";
     title.textContent = "Next-track recommendations";
@@ -6904,6 +6941,10 @@ function renderTrackList() {
   }
   if (isAssembleMode()) {
     renderAssembleRail();
+    return;
+  }
+  if (isStemsMode()) {
+    renderStemsRail();
     return;
   }
   const indexes = filteredTrackIndexes();
@@ -8535,14 +8576,14 @@ function updateApproveButtons() {
       deleteBtn.textContent = setFile ? "Delete from Pajamathon" : "Delete from Add Cues";
       deleteBtn.title = setFile
         ? "Remove this Sets/Pajamathon name and its VirtualDJ entry. House/Zouk and inbox hard-links stay."
-        : "Trash this Add Cues file and remove its VirtualDJ entry";
+        : "Trash this Add Cues file and remove its VirtualDJ entry. The Pajamathon set copy stays.";
     }
   }
   const deleteHint = document.querySelector(".review-section-delete .hint");
   if (deleteHint) {
     deleteHint.textContent = setFile
       ? "Set copy + stems → Trash · this path’s VDJ cues go with it. Library copies stay."
-      : "Audio + stems → Trash · this path’s VDJ cues go with it";
+      : "Audio + stems → Trash · this path’s VDJ cues go with it. Set copy stays.";
   }
 }
 
@@ -9421,7 +9462,7 @@ function renderFolders() {
   });
 }
 
-const UI_BUILD = "20260829-recs-event-plays";
+const UI_BUILD = "20260830-stems-new";
 
 async function loadHealth() {
   state.health = await api("/api/health");
@@ -9464,6 +9505,15 @@ function scheduleLoadTracks(opts = {}) {
 async function loadTracks({ keepPath, skipStatus = false, silent = false } = {}) {
   const listEl = $("trackList");
   const requestedMode = state.mode;
+  if (
+    requestedMode === "stems" ||
+    requestedMode === "recs" ||
+    requestedMode === "assemble" ||
+    requestedMode === "best_set"
+  ) {
+    if (listEl) listEl.classList.remove("list-loading");
+    return;
+  }
   const loadGen = ++state.tracksLoadGen;
   const haveTracks = Array.isArray(state.tracks) && state.tracks.length > 0;
   const soft = Boolean(silent || (haveTracks && requestedMode === "add_cues"));
@@ -9593,15 +9643,17 @@ function applyModeUi() {
   const practice = isPracticeMode();
   const recs = isRecsMode();
   const assemble = isAssembleMode();
+  const stems = isStemsMode();
   const bestSet = isBestSetMode();
   const setOverview = isSetOverviewMode();
   document.body.classList.toggle("mode-practice", practice);
   document.body.classList.toggle("mode-recs", recs);
   document.body.classList.toggle("mode-assemble", assemble);
+  document.body.classList.toggle("mode-stems", stems);
   document.body.classList.toggle("mode-review", review);
   document.body.classList.toggle("mode-best-set", bestSet);
   document.body.classList.toggle("mode-set-overview", setOverview);
-  document.body.classList.toggle("mode-sort", !review && !practice && !recs && !assemble && !bestSet && !setOverview);
+  document.body.classList.toggle("mode-sort", !review && !practice && !recs && !assemble && !stems && !bestSet && !setOverview);
   document.body.classList.toggle("practice-stack-layout", practice);
 
   $("listTitle").textContent = bestSet
@@ -9614,7 +9666,9 @@ function applyModeUi() {
       ? "Pajamathon"
       : isRecsMode()
         ? "Live from VDJ"
-        : review
+        : isStemsMode()
+          ? "Stem check"
+          : review
           ? state.crateFilter === "pajamathon"
             ? "Add Cues / Pajamathon"
             : state.crateFilter === "cueing"
@@ -9631,7 +9685,9 @@ function applyModeUi() {
       ? "Newest Zouk first · vibe crate"
       : isRecsMode()
         ? "Follows VDJ / STAGE now-playing"
-        : review
+        : isStemsMode()
+          ? "Vocal-layer holes vs the original mix"
+          : review
           ? state.crateFilter === "pajamathon"
             ? "Cue, confirm a lane, then sort"
             : state.crateFilter === "cueing"
@@ -9649,7 +9705,7 @@ function applyModeUi() {
     subEl.textContent = "";
     subEl.hidden = true;
   }
-  $("listToolbar").hidden = (!review && !setOverview) || isRecsMode() || isAssembleMode();
+  $("listToolbar").hidden = (!review && !setOverview) || isRecsMode() || isAssembleMode() || isStemsMode();
   const trackSearch = $("trackSearch");
   if (trackSearch) {
     trackSearch.placeholder = practice
@@ -9662,7 +9718,8 @@ function applyModeUi() {
   }
   const recsMode = isRecsMode();
   const assembleMode = isAssembleMode();
-  $("foldersPanel").hidden = review || practice || recsMode || assembleMode || bestSet || setOverview;
+  const stemsMode = isStemsMode();
+  $("foldersPanel").hidden = review || practice || recsMode || assembleMode || stemsMode || bestSet || setOverview;
   const crateFilter = $("crateFilter");
   if (crateFilter) crateFilter.hidden = setOverview;
   const readinessFilter = $("readinessFilter");
@@ -9691,8 +9748,10 @@ function applyModeUi() {
   if (recsPanel) recsPanel.hidden = !recsMode;
   const assemblePanel = $("assemblePanel");
   if (assemblePanel) assemblePanel.hidden = !assembleMode;
+  const stemsPanel = $("stemsPanel");
+  if (stemsPanel) stemsPanel.hidden = !stemsMode;
   const playerPanel = $("playerPanel");
-  if (playerPanel) playerPanel.hidden = bestSet;
+  if (playerPanel) playerPanel.hidden = bestSet || stemsMode;
   const queue = document.querySelector(".zone-queue");
   if (queue) queue.hidden = bestSet;
 
@@ -9710,7 +9769,7 @@ function applyModeUi() {
   hideInPractice.forEach((id) => {
     const el = $(id);
     if (!el) return;
-    if (practice || recsMode || assembleMode || bestSet) {
+    if (practice || recsMode || assembleMode || bestSet || stemsMode) {
       el.hidden = true;
     } else if (id === "sortActions") {
       el.hidden = review || setOverview;
@@ -9733,7 +9792,7 @@ function applyModeUi() {
       practiceWave.classList.remove("is-empty");
     }
   }
-  $("rerunRecBtn").hidden = review || setOverview || practice || bestSet || isRecsMode() || isAssembleMode();
+  $("rerunRecBtn").hidden = review || setOverview || practice || bestSet || isRecsMode() || isAssembleMode() || isStemsMode();
 
   // AutoCue scope buttons live in Add Cues review, not Sort.
   const headerScopes = $("autocueScopeHeader");
@@ -9794,11 +9853,18 @@ async function setMode(mode) {
     mode !== "best_set" &&
     mode !== "set_overview" &&
     mode !== "recs" &&
-    mode !== "assemble"
+    mode !== "assemble" &&
+    mode !== "stems"
   )
     return;
   if (state.mode === mode) {
-    if (!state.tracks.length) {
+    if (
+      !state.tracks.length &&
+      !isRecsMode() &&
+      !isAssembleMode() &&
+      !isStemsMode() &&
+      !isBestSetMode()
+    ) {
       loadTracks();
     }
     return;
@@ -9807,6 +9873,7 @@ async function setMode(mode) {
   stopRecsNowPlayingPoll();
   stopRecsPoll();
   stopAssemblePoll();
+  stopStemsPoll();
   state.mode = mode;
   if (mode === "set_overview" && !state.setDirFilter) state.setDirFilter = "pajamathon";
   if (mode === "set_overview" && !state.setApprovalFilter) state.setApprovalFilter = "all";
@@ -9859,9 +9926,15 @@ async function setMode(mode) {
   setStatus(
     isPracticeMode()
       ? "Loading practice mixes…"
-      : isReviewMode()
-        ? "Loading Add Cues…"
-        : "Loading Ready for Sort…"
+      : isStemsMode()
+        ? "Stem vocal check"
+        : isRecsMode()
+          ? "Watching VirtualDJ · recs refresh automatically"
+          : isAssembleMode()
+            ? "Assemble a Zouk crate for the event"
+            : isReviewMode()
+              ? "Loading Add Cues…"
+              : "Loading Ready for Sort…"
   );
   try {
     if (isPracticeMode()) {
@@ -9892,6 +9965,13 @@ async function setMode(mode) {
       setStatus("Assemble a Zouk crate for the event");
       renderAssembleMixTuners();
       await loadAssemblePreview();
+    } else if (isStemsMode()) {
+      setPlayerLoading(false);
+      state.tracks = [];
+      state.index = 0;
+      renderTrackList();
+      setStatus("Stem vocal check");
+      await loadStemsTab();
     } else {
       setWaveformStatus("Select a track");
       setPlayerLoading(false);
@@ -10340,6 +10420,17 @@ async function setPracticeView(view) {
   if (isPracticeMode()) renderPracticePanel();
 }
 
+function bestSetStatusLine() {
+  const all = state.practiceBestItems || [];
+  const hide = Boolean(state.practiceBestHidePlayed);
+  const visible = visibleBestPracticeItems(all, hide);
+  const hidden = bestPracticeHiddenCount(all, hide);
+  if (hidden) {
+    return `Best for set · ${visible.length} transitions · ${hidden} hidden (already played)`;
+  }
+  return `Best for set · ${visible.length} transitions (Gemini + priority)`;
+}
+
 async function loadBestPracticeScores() {
   state.practiceBestLoading = true;
   renderPracticeBestList();
@@ -10349,13 +10440,20 @@ async function loadBestPracticeScores() {
       min_overall: "7.0",
       saved_only: "false",
       min_priority: "0",
+      hide_live_played: "false",
     });
     const data = await api(`/api/practice/best?${params}`);
     state.practiceBestItems = data.items || [];
+    state.practiceBestLivePlayedError = data.live_played_error || "";
     renderPracticeBestList();
-    setStatus(
-      `Best for set · ${state.practiceBestItems.length} transitions (Gemini + priority)`
-    );
+    if (state.practiceBestLivePlayedError) {
+      setStatus(
+        "Hide played could not read the live set — showing every keeper.",
+        "error"
+      );
+    } else {
+      setStatus(bestSetStatusLine());
+    }
   } catch (err) {
     setStatus(err.message || String(err), "error");
     state.practiceBestItems = [];
@@ -10366,18 +10464,62 @@ async function loadBestPracticeScores() {
   }
 }
 
+function renderBestSetHidePlayedBtn() {
+  const btn = $("bestSetHidePlayedBtn");
+  if (!btn) return;
+  const on = Boolean(state.practiceBestHidePlayed);
+  const err = state.practiceBestLivePlayedError || "";
+  const liveN = (state.practiceBestItems || []).filter((it) => it.live_played).length;
+  btn.classList.toggle("is-on", on);
+  btn.disabled = Boolean(err);
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = on ? "Hiding played" : "Hide played";
+  if (err) {
+    btn.title = "Could not read Played folder / Friday–Saturday history.";
+    return;
+  }
+  btn.title = on
+    ? `${liveN} transition${liveN === 1 ? "" : "s"} hidden — already played in the live set. Click to show them.`
+    : `Hide transitions that use a song already played in the live set (${liveN} now).`;
+}
+
+async function toggleBestSetHidePlayed() {
+  state.practiceBestHidePlayed = !state.practiceBestHidePlayed;
+  try {
+    localStorage.setItem(
+      "musicSorter.bestSetHidePlayed",
+      state.practiceBestHidePlayed ? "1" : "0"
+    );
+  } catch {
+    /* ignore */
+  }
+  if (state.practiceBestHidePlayed) {
+    await loadBestPracticeScores();
+    return;
+  }
+  renderPracticeBestList();
+  if (isBestSetMode()) setStatus(bestSetStatusLine());
+}
+
 function renderPracticeBestList() {
   const el = $("practiceBestList");
   const countEl = $("practiceBestCount");
   if (!el) return;
-  const items = state.practiceBestItems || [];
+  const all = state.practiceBestItems || [];
+  const hide = Boolean(state.practiceBestHidePlayed);
+  const items = visibleBestPracticeItems(all, hide);
   if (countEl) countEl.textContent = String(items.length);
-  if (state.practiceBestLoading && !items.length) {
+  renderBestSetHidePlayedBtn();
+  if (state.practiceBestLoading && !all.length) {
     el.innerHTML = `<div class="empty">Loading best transitions…</div>`;
     return;
   }
-  if (!items.length) {
+  if (!all.length) {
     el.innerHTML = `<div class="empty">No keepers yet for pj mixes (save for set, overall ≥ 7, or priority ≥ 1).</div>`;
+    return;
+  }
+  if (!items.length) {
+    el.innerHTML = `<div class="empty">All keepers here were already played in the live set. Turn off Hide played to see them.</div>`;
     return;
   }
   el.innerHTML = items
@@ -11476,7 +11618,7 @@ async function deleteAddCuesTrack() {
     track: trackDisplayTitle(track),
     message: setFile
       ? "This removes the Pajamathon set copy and its VirtualDJ entry (cues and loops for this path). House/Zouk library copies are not touched."
-      : "This permanently removes the track from Add Cues and deletes its VirtualDJ entry (cues and loops for this path).",
+      : "This permanently removes the track from Add Cues and deletes its VirtualDJ entry for this path. The Sets/Pajamathon copy stays if you already added it.",
     note: `Audio${track.stems_path ? " + stems" : ""} → Trash (${cueN} cues, ${loopN} loops). Close VirtualDJ first if it is open.`,
     confirmLabel: "Delete to Trash",
     tone: "danger",
@@ -11641,6 +11783,7 @@ async function createFolder() {
 }
 
 function bindUi() {
+  bindStemsUi();
   const exactCueJump = $("exactCueJump");
   if (exactCueJump) {
     exactCueJump.addEventListener("change", () => {
@@ -11783,6 +11926,9 @@ function bindUi() {
   $("practiceExcludeBestBtn")?.addEventListener("click", () =>
     togglePracticeExcludeFromBest()
   );
+  $("bestSetHidePlayedBtn")?.addEventListener("click", () =>
+    toggleBestSetHidePlayed()
+  );
   bindPracticeWaveInteractions();
   document.querySelectorAll("#practiceTxSort button").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -11851,6 +11997,11 @@ function bindUi() {
     if (isPracticeMode()) {
       await loadPracticeMixes();
       setStatus("Practice mixes refreshed.");
+      return;
+    }
+    if (isStemsMode()) {
+      await loadStemsTab();
+      setStatus("Stem inventory refreshed.");
       return;
     }
     await loadTracks({ keepPath: currentTrack()?.path });
@@ -12115,6 +12266,13 @@ function bindUi() {
   } catch {
     /* ignore */
   }
+  try {
+    const hidePlayed = localStorage.getItem("musicSorter.bestSetHidePlayed");
+    if (hidePlayed === "1") state.practiceBestHidePlayed = true;
+    else if (hidePlayed === "0") state.practiceBestHidePlayed = false;
+  } catch {
+    /* ignore */
+  }
   syncBeatOnesBtn();
   $("targetBpmInput").addEventListener("change", () => {
     state.targetBpm = Number($("targetBpmInput").value) || 75;
@@ -12254,6 +12412,9 @@ async function boot() {
   if (params.get("mode") === "set_overview") {
     state.mode = "set_overview";
   }
+  if (params.get("mode") === "stems") {
+    state.mode = "stems";
+  }
   window.addEventListener("resize", () => {
     if (isPracticeMode()) schedulePracticeWaveRedraw();
   });
@@ -12264,14 +12425,19 @@ async function boot() {
     restoreRememberedAutocueJobs();
     syncAutocueUi();
     await loadHealth();
-    await loadTracks();
-    await hydrateAutocueJobs();
-    if (!isReviewMode()) {
-      await loadFolders();
-      selectFolder("");
+    if (isStemsMode()) {
+      await loadStemsTab();
+      setStatus("Stem vocal check");
+    } else {
+      await loadTracks();
+      await hydrateAutocueJobs();
+      if (!isReviewMode()) {
+        await loadFolders();
+        selectFolder("");
+      }
+      setStatus("Ready. Use Sort, Add Cues, or Practice modes · Space / J/K");
     }
     requestAnimationFrame(resetWorkspaceScroll);
-    setStatus("Ready. Use Sort, Add Cues, or Practice modes · Space / J/K");
   } catch (err) {
     setStatus(err.message, "error");
   }
@@ -13654,4 +13820,338 @@ try {
   bindAssembleUi();
 } catch {
   document.body.addEventListener("click", onAssembleChromeClick);
+}
+
+function stopStemsPoll() {
+  if (state.stemAuditTimer) {
+    clearInterval(state.stemAuditTimer);
+    state.stemAuditTimer = null;
+  }
+}
+
+function renderStemsRail() {
+  const root = $("trackList");
+  if (!root) return;
+  const inv = state.stemInventory;
+  const job = state.stemAuditJob;
+  const n = inv && inv.sidecar_count;
+  const broken = (job && job.broken_count) || 0;
+  root.innerHTML = `<div class="stems-rail">
+      <div class="stems-rail-kicker">Sidecars</div>
+      <strong>${n == null ? "—" : n}</strong>
+      <div class="subtitle">${broken} vocal-layer holes</div>
+    </div>`;
+}
+
+function selectedStemSidecars() {
+  return Array.from(document.querySelectorAll("#stemsBrokenTable input[data-stems-path]:checked"))
+    .map((el) => el.getAttribute("data-stems-path") || "")
+    .filter(Boolean);
+}
+
+function syncStemsDeleteButton() {
+  const btn = $("stemsDeleteBtn");
+  if (!btn) return;
+  const n = selectedStemSidecars().length;
+  btn.disabled = n === 0 || MusicSorterStems.stemsJobBusy(state.stemAuditJob);
+  btn.textContent = n ? `Delete ${n} sidecar${n === 1 ? "" : "s"}` : "Delete selected sidecars";
+}
+
+function renderStemsPanel() {
+  const job = state.stemAuditJob;
+  const inv = state.stemInventory;
+  const hint = $("stemsInventoryHint");
+  if (hint) {
+    const n = inv && inv.sidecar_count;
+    if (n == null) {
+      hint.textContent = "Looking up .vdjstems sidecars…";
+    } else {
+      const fresh = inv.unscanned_count;
+      const done = inv.scanned_count;
+      const extra =
+        fresh == null
+          ? ""
+          : ` · ${done || 0} already scanned · ${fresh} new`;
+      hint.textContent = `${n} .vdjstems sidecars under DJ Music${extra}. Scan new skips unchanged sidecars.`;
+    }
+  }
+  const stats = $("stemsStats");
+  if (stats) {
+    const checked = job ? job.checked || 0 : 0;
+    const broken = job ? job.broken_count || 0 : 0;
+    const ok = job ? job.ok_count || 0 : 0;
+    const errors = job ? job.error_count || 0 : 0;
+    stats.innerHTML = [
+      ["Checked", checked, ""],
+      ["Broken", broken, broken ? " is-bad" : ""],
+      ["OK", ok, ""],
+      ["Errors", errors, errors ? " is-bad" : ""],
+    ]
+      .map(
+        ([label, value, cls]) =>
+          `<div class="stems-stat${cls}"><strong>${value}</strong><span>${label}</span></div>`
+      )
+      .join("");
+  }
+  const busy = MusicSorterStems.stemsJobBusy(job);
+  const prog = $("stemsProgress");
+  if (prog) prog.hidden = !job;
+  const label = $("stemsProgressLabel");
+  if (label) label.textContent = job?.message || "Idle";
+  const count = $("stemsProgressCount");
+  const total = job?.total || 0;
+  const checked = job?.checked || 0;
+  if (count) count.textContent = total ? `${checked} / ${total}` : "—";
+  const fill = $("stemsProgressFill");
+  if (fill) {
+    const pct = total ? Math.min(100, Math.round((checked / total) * 100)) : busy ? 4 : 0;
+    fill.style.width = `${pct}%`;
+  }
+  const cancelBtn = $("stemsCancelBtn");
+  if (cancelBtn) cancelBtn.hidden = !busy;
+  const scanAll = $("stemsScanAllBtn");
+  const scanCued = $("stemsScanCuedBtn");
+  const checkBtn = $("stemsCheckBtn");
+  if (scanAll) {
+    scanAll.disabled = busy;
+    scanAll.textContent = busy ? "Scanning…" : "Scan new";
+  }
+  if (scanCued) scanCued.disabled = busy;
+  if (checkBtn) checkBtn.disabled = busy;
+  const rows = [];
+  if (state.stemCheckResult) rows.push(state.stemCheckResult);
+  const seen = new Set(rows.map((r) => r.stems_path || r.audio_path));
+  for (const r of job?.broken || []) {
+    const key = r.stems_path || r.audio_path;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(r);
+  }
+  for (const r of job?.errors || []) {
+    const key = r.stems_path || r.audio_path;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(r);
+  }
+  const table = $("stemsBrokenTable");
+  if (table) {
+    if (!rows.length) {
+      table.innerHTML = `<div class="stems-empty">${
+        job && job.status === "ok" ? "No vocal-layer holes in this scan." : "Run a scan to list flagged files."
+      }</div>`;
+    } else {
+      const root = job?.root || inv?.root || "";
+      table.innerHTML = `<table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>File</th>
+            <th>Holes</th>
+            <th>Range</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((r) => {
+              const sidecar = r.stems_path || `${r.audio_path || ""}.vdjstems`;
+              const rel = MusicSorterStems.formatStemRel(r.audio_path || sidecar, root);
+              const holes = r.error
+                ? escapeHtml(r.error)
+                : `${r.hole_seconds || 0}s`;
+              const range = r.error ? "—" : MusicSorterStems.formatHoles(r.holes || []);
+              const flag = r.broken ? "broken" : r.error ? "error" : "ok";
+              return `<tr data-flag="${flag}">
+                <td><input type="checkbox" data-stems-path="${escapeHtml(sidecar)}" ${
+                  r.broken || r.error ? "" : "disabled"
+                } /></td>
+                <td class="stems-path">${escapeHtml(rel)}</td>
+                <td>${escapeHtml(String(holes))}</td>
+                <td class="stems-holes">${escapeHtml(range)}</td>
+              </tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>`;
+      table.querySelectorAll("input[data-stems-path]").forEach((el) => {
+        el.addEventListener("change", syncStemsDeleteButton);
+      });
+    }
+  }
+  syncStemsDeleteButton();
+  const badge = $("countsBadge");
+  if (badge && isStemsMode()) {
+    const broken = job ? job.broken_count || 0 : 0;
+    badge.textContent = job ? `${broken} broken` : inv ? `${inv.sidecar_count} stems` : "Stems";
+    badge.className = broken ? "badge warn" : "badge ok";
+  }
+  if (isStemsMode()) {
+    renderTrackList();
+    updatePipelineStrip();
+  }
+}
+
+async function pollStemAuditJob(jobId) {
+  if (!jobId) return;
+  try {
+    const data = await api(`/api/stems/audit/${encodeURIComponent(jobId)}`, { timeoutMs: 8000 });
+    if (data.job) {
+      state.stemAuditJob = data.job;
+      renderStemsPanel();
+      if (!MusicSorterStems.stemsJobBusy(data.job)) stopStemsPoll();
+    }
+  } catch (err) {
+    const gone = /not found|404|Unknown stem/i.test(String(err.message || ""));
+    if (gone) {
+      stopStemsPoll();
+      if (state.stemAuditJob && MusicSorterStems.stemsJobBusy(state.stemAuditJob)) {
+        state.stemAuditJob.status = "ok";
+        state.stemAuditJob.message = "Scan process ended — last results kept.";
+        renderStemsPanel();
+      }
+      return;
+    }
+    if (isStemsMode()) setStatus(err.message || "Stem scan poll failed", "error");
+  }
+}
+
+function startStemsPoll(jobId) {
+  stopStemsPoll();
+  if (!jobId) return;
+  state.stemAuditTimer = setInterval(() => {
+    pollStemAuditJob(jobId);
+  }, 700);
+  pollStemAuditJob(jobId);
+}
+
+async function loadStemsTab() {
+  try {
+    const [inv, latest] = await Promise.all([
+      api("/api/stems/inventory", { timeoutMs: 20000 }),
+      api("/api/stems/audit", { timeoutMs: 8000 }).catch(() => null),
+    ]);
+    state.stemInventory = inv;
+    if (latest && latest.job) state.stemAuditJob = latest.job;
+    renderStemsPanel();
+    if (
+      MusicSorterStems.stemsJobBusy(state.stemAuditJob) &&
+      state.stemAuditJob.id &&
+      state.stemAuditJob.id !== "saved"
+    ) {
+      startStemsPoll(state.stemAuditJob.id);
+    }
+  } catch (err) {
+    setStatus(err.message || "Could not load stem inventory", "error");
+    renderStemsPanel();
+  }
+}
+
+async function startStemAudit(scope) {
+  try {
+    const data = await api("/api/stems/audit", {
+      method: "POST",
+      body: JSON.stringify({ scope, skip_scanned: true }),
+      timeoutMs: 15000,
+    });
+    state.stemCheckResult = null;
+    state.stemAuditJob = data.job;
+    renderStemsPanel();
+    if (data.job?.id) startStemsPoll(data.job.id);
+    setStatus(scope === "cued" ? "Scanning new cued stems…" : "Scanning new stems…");
+  } catch (err) {
+    setStatus(err.message || "Could not start stem scan", "error");
+  }
+}
+
+async function cancelStemAudit() {
+  const id = state.stemAuditJob?.id;
+  if (!id) return;
+  try {
+    const data = await api(`/api/stems/audit/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      timeoutMs: 8000,
+    });
+    if (data.job) state.stemAuditJob = data.job;
+    renderStemsPanel();
+  } catch (err) {
+    setStatus(err.message || "Could not cancel", "error");
+  }
+}
+
+async function checkStemPath() {
+  const input = $("stemsCheckPath");
+  const path = (input && input.value ? input.value : "").trim();
+  if (!path) {
+    setStatus("Paste an audio path to check.", "error");
+    return;
+  }
+  try {
+    const data = await api("/api/stems/check", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+      timeoutMs: 120000,
+    });
+    state.stemCheckResult = data.track;
+    renderStemsPanel();
+    if (data.track?.broken) {
+      setStatus(`Broken vocal stem · ${data.track.hole_seconds || 0}s holes`, "error");
+    } else if (data.track?.error) {
+      setStatus(data.track.error, "error");
+    } else {
+      setStatus("Vocal stem looks clean on this file.", "ok");
+    }
+  } catch (err) {
+    setStatus(err.message || "Check failed", "error");
+  }
+}
+
+async function deleteSelectedStemSidecars() {
+  const paths = selectedStemSidecars();
+  if (!paths.length) return;
+  const ok = await showConfirmDialog({
+    title: "Delete stem sidecars?",
+    message: `Remove ${paths.length} .vdjstems file${paths.length === 1 ? "" : "s"}. Audio stays. VirtualDJ may recreate them on load.`,
+    confirmLabel: "Delete sidecars",
+    tone: "danger",
+  });
+  if (!ok) return;
+  try {
+    const data = await api("/api/stems/delete", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+      timeoutMs: 20000,
+    });
+    const gone = new Set(data.paths || []);
+    if (state.stemAuditJob?.broken) {
+      state.stemAuditJob.broken = state.stemAuditJob.broken.filter(
+        (r) => !gone.has(r.stems_path)
+      );
+      state.stemAuditJob.broken_count = state.stemAuditJob.broken.length;
+    }
+    if (state.stemCheckResult && gone.has(state.stemCheckResult.stems_path)) {
+      state.stemCheckResult = null;
+    }
+    setStatus(`Deleted ${data.deleted || 0} sidecar${data.deleted === 1 ? "" : "s"}.`, "ok");
+    await loadStemsTab();
+  } catch (err) {
+    setStatus(err.message || "Delete failed", "error");
+  }
+}
+
+function bindStemsUi() {
+  if (document.body.dataset.stemsUiBound) return;
+  document.body.dataset.stemsUiBound = "1";
+  $("stemsScanAllBtn")?.addEventListener("click", () => startStemAudit("all"));
+  $("stemsScanCuedBtn")?.addEventListener("click", () => startStemAudit("cued"));
+  $("stemsCancelBtn")?.addEventListener("click", () => cancelStemAudit());
+  $("stemsCheckBtn")?.addEventListener("click", () => checkStemPath());
+  $("stemsDeleteBtn")?.addEventListener("click", () => deleteSelectedStemSidecars());
+  $("stemsCheckPath")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") checkStemPath();
+  });
+}
+
+try {
+  bindStemsUi();
+} catch {
+  /* stems panel missing in tests that don't load HTML */
 }

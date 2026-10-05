@@ -2,6 +2,11 @@
 
 Library copies (Zouk/House/Cues Sorted) are never touched. Already-cued set
 tracks that were never staged in Add Cues stay put.
+
+Delete from Add Cues in the UI is inbox cleanup after Add To Set — pass
+propagate_to_set=False so extra_deleted names keep their set copies.
+Finder snapshot-diff of other unstaged tracks still propagates. Set copies
+are also removed via Delete from Pajamathon.
 """
 
 from __future__ import annotations
@@ -247,6 +252,7 @@ def sync_pajamathon_set_deletes(
     staged_seed_path: Path | None = None,
     historical_delete_paths: list[Path] | None = None,
     extra_deleted: list[str] | None = None,
+    propagate_to_set: bool = True,
     ready_root: Path | None = None,
     cue_stage_roots: dict[str, Path] | None = None,
     library_roots: list[Path] | None = None,
@@ -279,6 +285,7 @@ def sync_pajamathon_set_deletes(
     current_names = list_audio_filenames(add_folder)
     snapshot = _load_snapshot(snap_path)
     extra = list(extra_deleted or [])
+    extra_set = {name for name in extra if name}
     # Missing snapshot: record current Add Cues only. Never replay staged/history
     # as deletes — that would trash successfully cued set tracks.
     previous_names = _snapshot_names(snapshot) if snapshot else list(current_names)
@@ -293,10 +300,10 @@ def sync_pajamathon_set_deletes(
         cue_stage_roots=cue_stage_roots,
     )
     library = _library_keys(lib_roots, archive)
-    explicit = {name for name in extra if name}
     index = build_set_match_index(sets)
 
     skipped_promoted: list[str] = []
+    skipped_inbox_cleanup: list[str] = []
     skipped_ambiguous: list[dict[str, Any]] = []
     skipped_missing: list[str] = []
     removed: list[dict[str, Any]] = []
@@ -307,10 +314,16 @@ def sync_pajamathon_set_deletes(
         if key in pipeline:
             skipped_promoted.append(name)
             continue
-        # Snapshot-diff only: still in House/Zouk/Cues Sorted means it was
-        # sorted, not deleted. Explicit Add Cues deletes still drop the set copy.
-        if name not in explicit and key in library:
+        # Still in House/Zouk/Cues Sorted means it was sorted or copied to
+        # library, not rejected from the event. Keep the set copy.
+        if key in library:
             skipped_promoted.append(name)
+            continue
+        # UI Delete from Add Cues: trash that inbox basename only. Add To Set
+        # already put a keeper in Sets/Pajamathon. Other snapshot-diff names
+        # (Finder deletes) still propagate.
+        if not propagate_to_set and name in extra_set:
+            skipped_inbox_cleanup.append(name)
             continue
         match = _unique_set_match(name, index=index)
         if match is None:
@@ -392,6 +405,7 @@ def sync_pajamathon_set_deletes(
         "removed": removed,
         "removed_count": len(removed),
         "skipped_promoted": skipped_promoted,
+        "skipped_inbox_cleanup": skipped_inbox_cleanup,
         "skipped_ambiguous": skipped_ambiguous,
         "skipped_missing": skipped_missing,
         "playlist_entries_removed": playlist_hits,

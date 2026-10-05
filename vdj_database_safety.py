@@ -886,7 +886,11 @@ def normalize_user2_dest(label: str) -> str:
     if parts[-1] == "Kizouk" and (len(parts) == 1 or parts[0] == "Sets"):
         return "Kizouk"
     head = parts[0]
-    if head in {"Add Cues", "Cues Sorted", "Sets"} or head.startswith("Cues Sorted"):
+    if (
+        head in {"Add Cues", "Cues Sorted", "Sets", "Cues", "Ready For Sort"}
+        or head.startswith("Cues Sorted")
+        or head.startswith("Pajamathon")
+    ):
         return ""
     return text
 
@@ -1111,8 +1115,12 @@ def rewrite_song_xml_in_database(
     new_song_xml: str,
     *,
     validate: bool = True,
+    base_song_xml: Optional[str] = None,
 ) -> Dict[str, int]:
     """Replace one Song block with pre-built XML that keeps native VDJ formatting.
+
+    ``base_song_xml``: the Song block the new XML was built from. If the block
+    in the file (re-read inside the lock) differs, nothing is written (stale).
 
     Re-read + splice happens inside ``vdj_database_exclusive_lock`` so a
     concurrent AutoCue child / UI edit of a *different* song cannot be
@@ -1129,6 +1137,13 @@ def rewrite_song_xml_in_database(
 
         start, end = span
         newline = _detect_newline(content)
+        if base_song_xml is not None:
+            _n = lambda x: x.replace("\r\n", "\n").strip()
+            if _n(content[start:end]) != _n(base_song_xml):
+                raise RuntimeError(
+                    "Song changed in database.xml after it was read for this edit "
+                    f"({audio_file_path}); nothing written. Re-run to rebuild from the current entry."
+                )
         song_xml = new_song_xml
         if newline == "\r\n":
             # Force CRLF for any injected markup (Path.read_text would have stripped it).
@@ -1149,12 +1164,20 @@ def rewrite_song_xml_in_database(
 
         prefix = content[:start]
         suffix = content[end:]
-        return _replace_database_parts_locked(
+        result = _replace_database_parts_locked(
             path,
             (prefix, song_xml, suffix),
             original_stats,
             stats_fn=_lightweight_content_stats if validate else None,
         )
+        back = read_vdj_database_text(path)
+        _n2 = lambda x: x.replace("\r\n", "\n").strip()
+        # The edit may change FilePath (relocate), so verify by content.
+        if _n2(song_xml) not in _n2(back):
+            raise RuntimeError(
+                f"Write read-back mismatch for {audio_file_path}; treat as NOT saved."
+            )
+        return result
 
 
 def rewrite_song_in_database(

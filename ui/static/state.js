@@ -28,6 +28,8 @@
       practiceView: "mix",
       practiceBestItems: [],
       practiceBestLoading: false,
+      practiceBestHidePlayed: false,
+      practiceBestLivePlayedError: "",
       practiceAnalyzeJob: null,
       practiceAnalyzeTimer: null,
       practiceSummary: null,
@@ -118,6 +120,10 @@
       assembleMinFit: null,
       assembleMixPrefsTimer: null,
       lastCueCopy: null,
+      stemAuditJob: null,
+      stemAuditTimer: null,
+      stemInventory: null,
+      stemCheckResult: null,
     };
   }
 
@@ -145,6 +151,10 @@
 
   function isSetOverviewMode() {
     return state.mode === "set_overview";
+  }
+
+  function isStemsMode() {
+    return state.mode === "stems";
   }
 
   /**
@@ -294,6 +304,7 @@
     isPracticeMode,
     isBestSetMode,
     isSetOverviewMode,
+    isStemsMode,
     currentTrack,
     stillOnTrack,
     trackReadinessStatus,

@@ -31,6 +31,7 @@ from .config import (
 )
 from .db_lock import vdj_db_write
 from .cue_readiness import assess_cue_readiness, vdj_bpm_to_actual
+from .lanes import lane_from_user_color
 from .musical_key import key_to_camelot, song_key_from_element
 from .library import (
     expand_library_mode,
@@ -57,6 +58,7 @@ from vdj_database_safety import (  # noqa: E402
     atomic_replace_database_parts,
     clone_song_entry_to_path,
     directory_sort_label,
+    insert_song_xml_in_database,
     iter_manual_poi_tags,
     load_song_element,
     normalize_database_path,
@@ -65,6 +67,7 @@ from vdj_database_safety import (  # noqa: E402
     read_vdj_database_text,
     relocate_song_filepath_in_database,
     rewrite_song_xml_in_database,
+    song_xml_with_new_filepath,
 )
 
 # VirtualDJ ARGB color ints → display names (same palette as AutoCue).
@@ -1498,10 +1501,13 @@ def _fill_display_fields_from_source(
     """
     from song_lane_color import classify_path, color_for_lane, current_user_color
 
+    from .lanes import lane_from_user_color
+
     dest_user2 = normalize_user2_dest(_user2_from_song_xml(dest_xml))
     src_user2 = normalize_user2_dest(_user2_from_song_xml(source_xml))
     if not src_user2:
-        src_user2 = normalize_user2_dest(directory_sort_label(str(source_path)))
+        origin = _origin_path_for_directory_sort(source_path)
+        src_user2 = normalize_user2_dest(directory_sort_label(str(origin)))
     user2 = dest_user2 or src_user2 or None
 
     dest_color = current_user_color(dest_xml)
@@ -1509,7 +1515,7 @@ def _fill_display_fields_from_source(
     if not src_color:
         lane = classify_path(str(source_path))
         src_color = color_for_lane(lane) if lane else None
-    color = dest_color or src_color or None
+    color = dest_color if lane_from_user_color(dest_color) else (src_color or None)
 
     if user2 is None and color is None:
         return dest_xml
@@ -1563,6 +1569,140 @@ def copy_display_fields_to_placement(
     return payload
 
 
+def _is_library_crate_path(path: Path) -> bool:
+    """True for files under House/, Zouk/, or Cues Sorted/ — not Ready/Add Cues."""
+    audio = path.expanduser().resolve()
+    roots = [Path(value).expanduser().resolve() for value in LIBRARIES.values() if value]
+    roots.append(CUES_SORTED.expanduser().resolve())
+    for root in roots:
+        try:
+            rel = audio.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts:
+            return True
+    return False
+
+
+def _origin_path_for_directory_sort(source: Path) -> Path:
+    """Prefer a Zouk/House/Cues Sorted folder so Sets copies get a visible User2."""
+    if _is_library_crate_path(source) and normalize_user2_dest(
+        directory_sort_label(str(source))
+    ):
+        return source
+    for hit in find_library_matches(source.name):
+        path = Path(str(hit.get("path") or ""))
+        if not path.is_file():
+            continue
+        if _is_library_crate_path(path) and normalize_user2_dest(
+            directory_sort_label(str(path))
+        ):
+            return path
+    for hit in find_cues_sorted_matches(source.name):
+        path = Path(str(hit.get("path") or ""))
+        if (
+            path.is_file()
+            and _is_library_crate_path(path)
+            and normalize_user2_dest(directory_sort_label(str(path)))
+        ):
+            return path
+    return source
+
+
+def _cloned_song_xml_for_dest(source_xml: str, source: Path, dest: Path) -> str:
+    origin = _origin_path_for_directory_sort(source)
+    return song_xml_with_new_filepath(
+        source_xml,
+        normalize_database_path(str(dest)),
+        directory_sort_path=str(origin),
+    )
+
+
+def clone_source_song_onto_dest(
+    source_path: str | Path,
+    dest_path: str | Path,
+    *,
+    database_path: Path | None = None,
+    dry_run: bool = False,
+    allow_vdj_running: bool = False,
+    create_backup: bool = True,
+    overwrite: bool = True,
+) -> dict[str, Any]:
+    """
+    Clone the source VirtualDJ Song onto a Sets copy.
+
+    Copies cues, cue colors, beatgrid, Infos UserColor, and Directory Sort
+    (Tags User2 from the Zouk/House origin — not the event folder name).
+    Replaces a thin VDJ-scanned dest entry.
+    """
+    source = _assert_under_queue_roots(Path(source_path))
+    dest = _assert_under_copy_cue_dests(Path(dest_path))
+    if source.resolve() == dest.resolve():
+        raise ValueError("Source and destination are the same file")
+    if not is_pajamathon_set_audio(dest, sets_root=SETS_ROOT):
+        raise ValueError(
+            "clone_source_song_onto_dest only writes Sets/Pajamathon copies, "
+            f"got {dest}"
+        )
+    db = Path(database_path) if database_path else VDJ_DATABASE
+    if not source.is_file():
+        raise FileNotFoundError(f"Source file not found: {source}")
+    if not dest.is_file():
+        raise FileNotFoundError(f"Placement file not found: {dest}")
+    if is_virtualdj_running() and not dry_run and not allow_vdj_running:
+        raise RuntimeError(
+            "VirtualDJ is running. Close it before cloning cues / Directory Sort "
+            "onto a set copy."
+        )
+    source_cues = summarize_cues(source, db)
+    if not source_cues.in_database:
+        raise ValueError(f"Source track is not in the VirtualDJ database: {source}")
+    dest_cues = summarize_cues(dest, db)
+    dest_has_markers = dest_cues.cue_count > 0 or dest_cues.loop_count > 0
+    if dest_has_markers and not overwrite:
+        raise ValueError(
+            f"Destination already has {dest_cues.cue_count} cue(s)"
+            + (f" and {dest_cues.loop_count} loop(s)" if dest_cues.loop_count else "")
+            + ". Pass overwrite=true to replace them."
+        )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "dry_run": dry_run,
+        "mode": "cloned",
+        "source_path": str(source),
+        "dest_path": str(dest),
+        "copied_cues": source_cues.cue_count,
+        "copied_loops": source_cues.loop_count,
+        "overwrote": dest_has_markers,
+        "database_backup": None,
+    }
+    if dry_run:
+        return payload
+    backup = backup_database(db) if create_backup else None
+    payload["database_backup"] = backup
+    with vdj_db_write():
+        content = read_vdj_database_text(db)
+        _, src_start, src_end = _song_span_for_path(
+            content, source, source_path
+        )
+        cloned_xml = _cloned_song_xml_for_dest(
+            content[src_start:src_end], source, dest
+        )
+        try:
+            dest_key, _, _ = _song_span_for_path(content, dest, dest_path)
+        except KeyError:
+            dest_key = None
+        if dest_key:
+            rewrite_song_xml_in_database(db, dest_key, cloned_xml, validate=True)
+        else:
+            insert_song_xml_in_database(db, cloned_xml, validate=True)
+    after = summarize_cues(dest, db)
+    payload["dest_cues"] = after.to_dict()
+    payload["dest_is_cued"] = after.is_cued
+    payload["user_color"] = after.user_color
+    return payload
+
+
 def copy_cues_to_placement(
     source_path: str | Path,
     dest_path: str | Path,
@@ -1574,12 +1714,13 @@ def copy_cues_to_placement(
     create_backup: bool = True,
 ) -> dict[str, Any]:
     """
-    Copy VirtualDJ cue/loop markers from a Ready/Add Cues track onto an
-    existing House/Zouk/Cues Sorted file. Audio files are not moved.
+    Copy VirtualDJ cue/loop markers from a Ready/Add Cues/library track onto
+    an existing House/Zouk/Cues Sorted/Sets file. Audio files are not moved.
 
-    If the destination has no Song entry, clone the source Song under the
-    dest FilePath. If it already has a Song, replace only its manual cue/loop
-    POIs and keep dest Tags/Scan/beatgrid/Comment/FilePath.
+    Sets/Pajamathon dests get a full Song clone (cues, cue colors, beatgrid,
+    Infos UserColor, Directory Sort User2 from the Zouk/House origin).
+    Library dests: if missing from the database, clone the source Song; if
+    present, replace only manual cue/loop POIs and keep dest Tags/Scan.
     """
     source = _assert_under_queue_roots(Path(source_path))
     dest = _assert_under_copy_cue_dests(Path(dest_path))
@@ -1622,6 +1763,38 @@ def copy_cues_to_placement(
             + (f" and {dest_cues.loop_count} loop(s)" if dest_cues.loop_count else "")
             + ". Pass overwrite=true to replace them."
         )
+
+    if is_pajamathon_set_audio(dest, sets_root=SETS_ROOT):
+        cloned = clone_source_song_onto_dest(
+            source,
+            dest,
+            database_path=db,
+            dry_run=dry_run,
+            allow_vdj_running=allow_vdj_running,
+            create_backup=create_backup,
+            overwrite=overwrite,
+        )
+        root_name, relative_path = _placement_label(dest)
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "mode": cloned.get("mode") or "cloned",
+            "source_path": str(source),
+            "dest_path": str(dest),
+            "name": dest.name,
+            "root_name": root_name,
+            "relative_path": relative_path,
+            "copied_cues": int(cloned.get("copied_cues") or source_cues.cue_count),
+            "copied_loops": int(cloned.get("copied_loops") or source_cues.loop_count),
+            "overwrote": bool(cloned.get("overwrote")),
+            "dest_was_cued": dest_has_markers,
+            "dest_had_cues": dest_cues.cue_count,
+            "dest_had_loops": dest_cues.loop_count,
+            "dest_in_database": dest_cues.in_database,
+            "database_backup": cloned.get("database_backup"),
+            "dest_cues": cloned.get("dest_cues"),
+            "dest_is_cued": cloned.get("dest_is_cued"),
+        }
 
     root_name, relative_path = _placement_label(dest)
     mode = "injected" if dest_cues.in_database else "cloned"
@@ -1969,9 +2142,11 @@ def add_track_to_event_set(
     create_backup: bool = True,
 ) -> dict[str, Any]:
     """
-    Copy a Ready/Add Cues track into Sets/Pajamathon (audio + stems + VDJ cues).
+    Copy a Ready/Add Cues/library track into Sets/Pajamathon.
 
-    Ready/Add Cues stays put. Used when a cued track is missing from the event crate.
+    Copies audio + stems and clones the VirtualDJ Song: cues, cue colors,
+    beatgrid, title UserColor, and Directory Sort (origin crate User2).
+    Source stays put.
     """
     source = _assert_under_queue_roots(Path(source_path))
     if not source.is_file():
@@ -1986,16 +2161,22 @@ def add_track_to_event_set(
         folder = root / event_folder_name(event_name)
     else:
         folder = pajamathon_event_folder(root)
+    folder = folder.expanduser().resolve()
+    try:
+        folder.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Event folder must stay under Sets/: {folder}") from exc
 
     for hit in find_set_matches(source.name, sets_root=root):
         event = str(hit.get("event") or hit.get("root_name") or "")
         if is_pajamathon_event(event) or folder.name.lower() in event.lower():
-            return {
+            dest_existing = Path(str(hit.get("path") or ""))
+            payload = {
                 "ok": True,
                 "already_exists": True,
                 "dry_run": dry_run,
                 "source_path": str(source),
-                "dest_path": str(hit.get("path") or ""),
+                "dest_path": str(dest_existing),
                 "event": event,
                 "relative_path": str(hit.get("relative_path") or ""),
                 "existing": hit,
@@ -2004,6 +2185,39 @@ def add_track_to_event_set(
                 "stems_copied": False,
                 "database_backup": None,
             }
+            source_cues = summarize_cues(source, database_path)
+            dest_cues = (
+                summarize_cues(dest_existing, database_path)
+                if dest_existing.is_file()
+                else None
+            )
+            needs_clone = bool(
+                source_cues.in_database
+                and dest_existing.is_file()
+                and dest_cues is not None
+                and (
+                    not dest_cues.has_beatgrid
+                    or dest_cues.cue_count < source_cues.cue_count
+                    or dest_cues.loop_count < source_cues.loop_count
+                    or not lane_from_user_color(dest_cues.user_color)
+                )
+            )
+            if dry_run or not needs_clone:
+                return payload
+            copied = clone_source_song_onto_dest(
+                source,
+                dest_existing,
+                database_path=database_path,
+                dry_run=False,
+                allow_vdj_running=allow_vdj_running,
+                create_backup=create_backup,
+                overwrite=True,
+            )
+            payload["database_backup"] = copied.get("database_backup")
+            payload["cue_mode"] = copied.get("mode")
+            payload["copied_cues"] = int(copied.get("copied_cues") or 0)
+            payload["copied_loops"] = int(copied.get("copied_loops") or 0)
+            return payload
 
     index = next_set_track_index(folder)
     dest = folder / f"{index:03d}. {_set_copy_basename(source)}"
@@ -2030,16 +2244,22 @@ def add_track_to_event_set(
         payload["copied_loops"] = source_cues.loop_count
         return payload
 
+    if is_virtualdj_running() and not allow_vdj_running:
+        raise RuntimeError(
+            "VirtualDJ is running. Close it before adding a track to the set "
+            "so cues, color, and Directory Sort actually land in VDJ."
+        )
+
     _copy_file_and_stems(source, dest)
-    if source_cues.cue_count > 0 or source_cues.loop_count > 0:
-        copied = copy_cues_to_placement(
+    if source_cues.in_database:
+        copied = clone_source_song_onto_dest(
             source,
             dest,
-            overwrite=False,
             database_path=database_path,
             dry_run=False,
             allow_vdj_running=allow_vdj_running,
             create_backup=create_backup,
+            overwrite=True,
         )
         payload["database_backup"] = copied.get("database_backup")
         payload["cue_mode"] = copied.get("mode")
