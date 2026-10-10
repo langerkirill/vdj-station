@@ -4,7 +4,7 @@ A **read-only** copy of the Music Sorter UI tuned for organic / melodic / deep h
 It lives in `~/src/vdj-station-house` and never touches the live Zouk build on 8787
 (`~/src/vdj-station`).
 
-**Current live build:** `20261005-house-sauna-fest11` (fest11) on port 8788.
+**Current live build:** `20261010-house-sauna-fest16` (fest16) on port 8788 (fest12-fest16 code lives in the live house tree; main was last promoted at fest11).
 Bump `UI_BUILD` in `ui/app.py` and this line on every live ship.
 Write mode: `ui/start_8788_write.sh`. Live Mac path: `~/src/vdj-station-house` — do not `git checkout` this tree while :8788 is serving.
 
@@ -56,6 +56,15 @@ dies with the calling shell).
   BPM and key shown per row; missing values show an em dash and sort last.
 - Notes, caches, AutoCue jobs, action log (`music-sorter-actions.jsonl`), transitions.db etc. live in
   `~/Music/DJ/Notes/House-8788/`. Transition note files are read (never written) from the real Notes dir.
+
+- **Gemini House-folder rec never hangs (R-106, fest16, 2026-10-10):** `POST /api/recommend` waits at most
+  `MUSIC_SORTER_REC_TIMEOUT_S` (default 22 s) and then answers `{ok:false, reason:"timeout"|"quota"|"error", message}`;
+  the Gemini job keeps running in the background (one per song, upload/HTTP capped at 120 s) and caches its rec, so
+  Retry a moment later is instant. The page aborts after 27 s anyway, so "Asking Gemini for a House folder…" always
+  ends with a rec or "Gemini didn't answer — pick a House folder manually" + **Retry** (timeouts also re-ask quietly
+  up to 3 times). The manual "Or pick a House folder" list is usable the whole time; a manual pick cancels the pending
+  rec, and a late answer never replaces the pick or lands on another song (request token + song path). An old `?v=`
+  tag in the address bar is rewritten to the running build; open tabs check the server build every 5 min.
 
 ## Tests
 
