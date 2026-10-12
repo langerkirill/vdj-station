@@ -4,7 +4,7 @@ A **read-only** copy of the Music Sorter UI tuned for organic / melodic / deep h
 It lives in `~/src/vdj-station-house` and never touches the live Zouk build on 8787
 (`~/src/vdj-station`).
 
-**Current live build:** `20261010-house-sauna-fest16` (fest16) on port 8788 (fest12-fest16 code lives in the live house tree; main was last promoted at fest11).
+**Current live build:** `20261012-house-sauna-fest17` (fest17) on port 8788 (fest12-fest17 code lives in the live house tree; main was last promoted at fest11).
 Bump `UI_BUILD` in `ui/app.py` and this line on every live ship.
 Write mode: `ui/start_8788_write.sh`. Live Mac path: `~/src/vdj-station-house` — do not `git checkout` this tree while :8788 is serving.
 
@@ -65,6 +65,20 @@ dies with the calling shell).
   up to 3 times). The manual "Or pick a House folder" list is usable the whole time; a manual pick cancels the pending
   rec, and a late answer never replaces the pick or lands on another song (request token + song path). An old `?v=`
   tag in the address bar is rewritten to the running build; open tabs check the server build every 5 min.
+
+- **Sort onto an existing copy merges the Add Cues markers, never overwriting hand edits (R-107, fest17, 2026-10-12):**
+  when Copy to House (and Also copy to Sets/Sauna Fest) finds the same audio already at the destination, it used to
+  skip the Song clone and still report success, so the copies kept stale markers. Now each existing House/Sets copy
+  is merged with Virtual DJ Developer's AutoCue writer guard (`marker_guard`, vendored read-only in
+  `sorter/_vendor_marker_guard`, sha1 2e9f38b4): a copy marker is replaceable only if it is pure AutoCue output
+  untouched since the clone (in the clone baseline - `copy_clones.json`, else the first DB backup after the sort - AND
+  in AutoCue's last write on the source before that clone). Everything else on the copy is Kirill's and is kept;
+  source markers are added only where they don't collide with a kept marker (same spot +-0.25 s, same bar, or an
+  overlapping loop). Markers are matched by kind, position, name, color and loop length, never by hotcue/slot number;
+  new markers get free numbers. A collision or a missing clone baseline on ANY copy = nothing is written and the sort
+  answers `ok:false` + warning ("Not fully sorted: ..."). Each write: app DB backup first, JSON of before/after in
+  `~/ms_backups/r107-overwritten-markers-*.json`, locked validated rewrite, read-back. An emptied Add Cues crate shows
+  "Nothing left to cue in <crate>" instead of "Loading tracks…".
 
 ## Tests
 
