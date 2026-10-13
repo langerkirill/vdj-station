@@ -13,7 +13,7 @@ set -uo pipefail
 MODE="check"
 [ "${1:-}" = "--apply" ] && MODE="apply"
 CANON="$(cd "$(dirname "$0")/../.." && pwd -P)"
-BRANCH="autocue-lab-alludd"
+BRANCH="main"
 HOUSE="${VDJ_HOUSE_ROOT:-$HOME/src/vdj-station-house}"
 STATION="${VDJ_STATION_ROOT:-$HOME/src/vdj-station}"
 DB="${VDJ_DATABASE:-$HOME/Library/Application Support/VirtualDJ/database.xml}"

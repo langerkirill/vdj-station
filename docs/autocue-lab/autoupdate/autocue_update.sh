@@ -140,7 +140,7 @@ gate_tree() {  # gate_tree <version> <dir>: the version's tests around its INSTA
 legacy_tree() {  # legacy_tree <commit> <dir>: a first-updater release's source tree (checkout)
   [ -n "$CHECKOUT" ] || return 1
   rm -rf "$2" && mkdir -p "$2" || return 1
-  git -C "$CHECKOUT" archive "$1" -- . ':(exclude)house-fork' ':(exclude)bench/improve-partial' \
+  git -C "$CHECKOUT" archive "$1" -- . ':(exclude)bench/improve-partial' \
       | tar -x -C "$2"
 }
 smoke() {  # smoke <dir> <version>: the installed package imports, is that version, has its model
@@ -445,7 +445,7 @@ for helper in autocue_versions.py autocue_github.py; do
   if [ -n "$b" ]; then
     tar -xzOf "$b" "docs/autocue-lab/autoupdate/$helper" > "$APP/bin/.$helper.new" 2>/dev/null
   elif [ -n "$CHECKOUT" ]; then
-    git -C "$CHECKOUT" show "origin/autocue-lab-alludd:docs/autocue-lab/autoupdate/$helper" > "$APP/bin/.$helper.new" 2>/dev/null
+    git -C "$CHECKOUT" show "origin/main:docs/autocue-lab/autoupdate/$helper" > "$APP/bin/.$helper.new" 2>/dev/null
   fi
   [ -s "$APP/bin/.$helper.new" ] && mv -f "$APP/bin/.$helper.new" "$APP/bin/$helper" || rm -f "$APP/bin/.$helper.new"
 done

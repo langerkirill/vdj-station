@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Cut an AutoCue release: the GitHub Release v<version> that the Mac's auto-updater installs.
 
-    python3 docs/autocue-lab/release.py 1.0.1            # check, build, test; push only with --push
-    python3 docs/autocue-lab/release.py 1.0.1 --push
+    python3 docs/autocue-lab/release.py 1.2.0                    # check, build, test; nothing else
+    python3 docs/autocue-lab/release.py 1.2.0 --install-only      # + install releases/1.2.0, never activate
+    python3 docs/autocue-lab/release.py 1.2.0 --push              # + push HEAD to vdj-station main
 
 Refuses unless:
-  - the branch is autocue-lab-alludd with nothing uncommitted (the release is that commit);
+  - HEAD is vdj-station's origin/main (or a fast-forward of it) with nothing uncommitted;
   - vdj_cuer/_version.py says <version> and CHANGELOG.md has a "## <version>" section;
   - <version> is newer than every v* tag, and v<version> exists neither here nor on GitHub
     (a version never changes: fix forward with a new one);
-  - the wheel builds, imports from a clean folder with its model, and AutoCue's tests plus the
-    House sorter's tests pass against the INSTALLED package (as the Mac's gate runs them),
+  - the wheel builds, imports from a clean folder with its model, and this repo's tests/
+    pass against the INSTALLED package (as the Mac's gate runs them),
     except the failures listed in docs/autocue-lab/known_test_failures.txt.
 Then pushes the branch. The push carries the version bump, so GitHub Actions
 (.github/workflows/release.yml) builds the same assets from that commit, checks them, and creates
@@ -30,7 +31,8 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-BRANCH = "autocue-lab-alludd"
+BRANCH = "main"  # vdj-station main is the one AutoCue tree (TL 2026-10-12)
+APP = Path(os.environ.get("VDJ_AUTOCUE_HOME", str(Path.home() / ".vdj-autocue")))
 KNOWN = REPO / "docs" / "autocue-lab" / "known_test_failures.txt"
 sys.path.insert(0, str(REPO / "docs" / "autocue-lab" / "autoupdate"))
 from autocue_gate import _env, run_suite  # noqa: E402  (same JUnit runner as the Mac gate)
@@ -56,17 +58,41 @@ def changelog_section(ver: str) -> str:
     return m.group(0).strip() if m else ""
 
 
+def install_only(ver: str, wheel: Path) -> None:
+    """releases/<ver> exactly like the updater's install_release, without set_current or any restart."""
+    rel, cur = APP / "releases", APP / "current"
+    before = os.path.realpath(cur) if os.path.lexists(cur) else None
+    d, tmp = rel / ver, rel / f"{ver}.tmp"
+    if (d / ".autocue_version").is_file():
+        die(f"{d} is installed already; a release never changes")
+    shutil.rmtree(tmp, ignore_errors=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "--no-index",
+                    "--target", str(tmp), str(wheel)], check=True)
+    subprocess.run([sys.executable, "-m", "compileall", "-q", str(tmp)], capture_output=True)
+    (tmp / ".autocue_version").write_text(ver + "\n")
+    os.replace(tmp, d)
+    after = os.path.realpath(cur) if os.path.lexists(cur) else None
+    if after != before:
+        die(f"'current' changed during install ({before} -> {after}); this must never happen")
+    print(f"installed {d} (not active: current -> {after})")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("version")
-    ap.add_argument("--push", action="store_true", help="tag and push (otherwise only check)")
+    ap.add_argument("--push", action="store_true", help="push HEAD to origin main (otherwise only check)")
+    ap.add_argument("--install-only", action="store_true",
+                    help="after the checks, install into ~/.vdj-autocue/releases/<ver>; NEVER switches "
+                         "'current' and never restarts a sorter (activation is the updater's / Kirill's call)")
+    ap.add_argument("--keep-dist", metavar="DIR", help="copy the built release assets to DIR")
     a = ap.parse_args()
     ver = a.version.lstrip("v")
     if str(Version(ver)) != ver:
         die(f"{ver} is not a normalized version (e.g. 1.0.1)")
 
-    if git("rev-parse", "--abbrev-ref", "HEAD") != BRANCH:
-        die(f"not on {BRANCH}")
+    git("fetch", "-q", "origin", BRANCH, check=False)
+    if subprocess.run(["git", "-C", str(REPO), "merge-base", "--is-ancestor", f"origin/{BRANCH}", "HEAD"]).returncode:
+        die(f"HEAD is not origin/{BRANCH} or a fast-forward of it")
     if git("status", "--porcelain", "--untracked-files=no"):
         die("uncommitted changes: commit first (the tag is the commit)")
     file_ver = re.search(r'__version__ = "([^"]+)"', (REPO / "vdj_cuer" / "_version.py").read_text()).group(1)
@@ -123,9 +149,7 @@ def main() -> int:
         print(f"release assets build, install and load: {sizes}")
 
         failures = []
-        runs = [("tests", tree, "tests", _env(home_root / "a", tree)),
-                ("House ui/tests", REPO / "house-fork", "ui/tests",
-                 _env(home_root / "h", pure, [REPO / "house-fork", REPO / "house-fork" / "ui"], autocue_root=pure))]
+        runs = [("tests", tree, "tests", _env(home_root / "a", tree))]  # this repo's own tests/
         for name, cwd, target, env in runs:
             r = run_suite(sys.executable, cwd, target, env, work / f"{name.split()[0]}.xml", 1800)
             if not r.get("ok"):
@@ -135,12 +159,20 @@ def main() -> int:
             failures += new
         if failures:
             die("new test failures:\n  " + "\n  ".join(failures))
+        if a.keep_dist:
+            keep = Path(a.keep_dist).expanduser()
+            keep.mkdir(parents=True, exist_ok=True)
+            for f in dist.iterdir():
+                shutil.copy2(f, keep / f.name)
+            print(f"release assets kept in {keep}")
+        if a.install_only:
+            install_only(ver, wheel)
     finally:
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(home_root, ignore_errors=True)
 
     if not a.push:
-        print(f"ready: run again with --push to tag v{ver} on {head[:7]} and push it")
+        print(f"ready: {head[:7]} is v{ver}" + ("" if a.install_only else "; nothing installed or pushed"))
         return 0
     # the Release workflow runs on pushes that change vdj_cuer/_version.py or the workflow itself
     git("fetch", "-q", "origin", BRANCH, check=False)
@@ -149,7 +181,7 @@ def main() -> int:
         die(f"nothing in this push starts the Release workflow (vdj_cuer/_version.py is already {ver} on "
             "GitHub): the version bump must be in the push")
     for attempt in range(4):
-        if subprocess.run(["git", "-C", str(REPO), "push", "-u", "origin", BRANCH]).returncode == 0:
+        if subprocess.run(["git", "-C", str(REPO), "push", "origin", f"HEAD:{BRANCH}"]).returncode == 0:
             break
         if attempt == 3:
             die(f"could not push {BRANCH}")

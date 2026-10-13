@@ -1,6 +1,6 @@
 # Running the canonical AutoCue on the Mac
 
-Branch `autocue-lab-alludd` of `langerkirill/vdj-autocue-lab` (private) is the one AutoCue
+`main` of `langerkirill/vdj-station` is the one AutoCue
 tree: station work of 2026-10-08 (voice-band vocals, drum/melody colors, vocal pickup rule,
 loop seam re-test) + public main 834ba38 + the House safety hardening, the House cue model
 (2026-10-08, 708 tracks), and the fixes since (read-back, fast saves, never replacing
@@ -23,7 +23,7 @@ never writes database.xml.
 ## 1. Get the code
 
 ```bash
-cd ~/src && git clone -b autocue-lab-alludd https://github.com/langerkirill/vdj-autocue-lab.git
+cd ~/src && git clone -b main https://github.com/langerkirill/vdj-station.git
 ```
 
 No new venv: the scripts use `~/src/vdj-station-house/venv` (it saved the cue model, so its

@@ -2,7 +2,7 @@
 
 AutoCue is the pip package `vdj-autocue` (`pyproject.toml`). A **release is the GitHub Release
 `v<version>`** of the private repo `langerkirill/vdj-autocue-lab`. Pushing a new version
-(`vdj_cuer/_version.py`) to `autocue-lab-alludd` starts `.github/workflows/release.yml`, which
+(`vdj_cuer/_version.py`) to vdj-station `main` starts `.github/workflows/release.yml`, which
 builds the release assets from that commit (`docs/autocue-lab/autoupdate/build_release_assets.sh`),
 checks that the package installs and imports, and then creates the tag `v<version>` on that
 commit together with the Release (a failed run creates no tag). The cloud session never pushes
@@ -49,7 +49,7 @@ one notification and installs them with `autocue_update.sh --refresh-updater`.
 
 ## Cutting a release (cloud session)
 
-1. Finish the change on `autocue-lab-alludd` with tests; commit and push as usual.
+1. Finish the change on vdj-station `main` with tests; commit and push as usual.
 2. Bump `vdj_cuer/_version.py`, add the `CHANGELOG.md` section, commit.
 3. `python3 docs/autocue-lab/release.py <version>` checks everything, builds the assets exactly
    as CI will, and runs the tests the way the Mac does (the test bundle around the installed

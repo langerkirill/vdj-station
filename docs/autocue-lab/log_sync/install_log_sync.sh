@@ -31,7 +31,7 @@ esac
 
 # 1. Own clone on the logs branch (never the working checkout).
 if [ ! -d "$SYNC/.git" ]; then
-  git clone -q --depth 1 --branch autocue-lab-alludd "$REPO_URL" "$SYNC"
+  git clone -q --depth 1 --branch main "$REPO_URL" "$SYNC"
   if git -C "$SYNC" ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
     git -C "$SYNC" fetch -q --depth 1 origin "$BRANCH:$BRANCH"
     git -C "$SYNC" checkout -q "$BRANCH"

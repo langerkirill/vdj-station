@@ -19,7 +19,7 @@ VER="$("$PY" -c 'import re; print(re.search(r"__version__ = \"([^\"]+)\"", open(
 SRC="$(mktemp -d)"
 trap 'rm -rf "$SRC"' EXIT
 # the wheel from the committed files only
-git archive HEAD -- . ':(exclude)house-fork' ':(exclude)bench' | tar -x -C "$SRC"
+git archive HEAD -- . ':(exclude)bench' | tar -x -C "$SRC"
 "$PY" -m pip wheel -q --no-deps -w "$OUT" "$SRC"
 [ -f "$OUT/vdj_autocue-$VER-py3-none-any.whl" ] || { echo "no wheel vdj_autocue-$VER-py3-none-any.whl in $OUT" >&2; exit 1; }
 # the tests and their data, same commit
