@@ -3,8 +3,6 @@
 # (git pathspecs: a :(exclude) line leaves that path out).
 tests
 ui
-bench
-:(exclude)bench/improve-partial
 pyproject.toml
 CHANGELOG.md
 cue_accuracy_benchmark.py
