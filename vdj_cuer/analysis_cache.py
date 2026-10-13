@@ -16,6 +16,39 @@ DEFAULT_CACHE_DIR = (
 # Keep in sync with vdj_cuer.common.TARGET_MIN_LOOPS (avoid importing common here).
 MIN_CACHED_LOOPS = 2
 
+# The cached analysis is the finalized result: Gemini's answer PLUS the local stem
+# measurements (vocal/drum evidence, gates, precision snap). A cache entry made by older
+# code would silently keep old stem decisions after an update (2026-10-08: a re-cue of
+# California Dreaming in 8 s reproduced the 10-04 cues). Entries carry a hash of these
+# modules' source; any change -> one fresh analysis per song.
+_ANALYSIS_MODULES = (
+    "gemini_analysis.py", "stems.py", "stem_evidence.py", "stem_color.py", "vocal_gate.py",
+    "precision_gate.py", "cue_hygiene.py", "loop_seam_dsp.py", "loop_seam_gemini.py",
+    "analysis_postprocess.py", "stem_cue_plan.py", "stem_vocal_holes.py", "common.py",
+    "analysis_cache.py",
+)
+_CODE_ID: Optional[str] = None
+
+
+def analysis_code_files() -> list[Path]:
+    here = Path(__file__).resolve().parent
+    return [here / name for name in _ANALYSIS_MODULES if (here / name).is_file()]
+
+
+def analysis_code_id() -> str:
+    """Short hash of the analysis-stage source files (changes on any edit to them)."""
+    global _CODE_ID
+    if _CODE_ID is None:
+        digest = hashlib.sha1()
+        for path in analysis_code_files():
+            digest.update(path.name.encode("utf-8") + b"\0")
+            try:
+                digest.update(path.read_bytes())
+            except OSError:
+                pass
+        _CODE_ID = digest.hexdigest()[:12]
+    return _CODE_ID
+
 
 def analysis_is_usable(analysis: Any) -> bool:
     if not isinstance(analysis, dict):
@@ -119,6 +152,9 @@ def load_cached_analysis(
         return None
     if record.get("schema") != CACHE_SCHEMA:
         return None
+    if record.get("code") != analysis_code_id():
+        print("📦 Cached analysis was made by older AutoCue code; analyzing again")
+        return None
     return analysis
 
 
@@ -138,6 +174,7 @@ def save_cached_analysis(
     record = {
         **fingerprint,
         "model": model,
+        "code": analysis_code_id(),
         "saved_at": datetime.now().isoformat(timespec="seconds"),
         "analysis": analysis,
     }

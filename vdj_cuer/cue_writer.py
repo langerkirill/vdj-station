@@ -8,6 +8,18 @@ from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .common import *
+from .cue_hygiene import (
+    MIN_LOOP_BEATS,
+    anchor_late_loop,
+    dedupe_cues,
+    drop_crowded_moved_cues,
+    drop_late_cues,
+    final_loop_seam_ok,
+    fit_loop_beats,
+    rename_final_chorus,
+    resolve_half_entered,
+)
+from .stem_evidence import vocal_stem_is_usable as _vocal_usable
 from vdj_database_safety import (
     extract_manual_pois_from_song_xml,
     format_vdj_poi_line,
@@ -182,6 +194,8 @@ class PreparedSongCues:
     beatgrid_offset: Optional[float] = None
     beatgrid_corrected: bool = False
     comment: str = ""
+    # True when the run built nothing new for its scope: write nothing at all.
+    nothing_to_write: bool = False
 
 
 class CueWriterMixin:
@@ -231,6 +245,14 @@ class CueWriterMixin:
                 profiles = cache.get_or_load_stem_profiles(list(stem_files))
             else:
                 profiles = load_stem_profiles(stem_files)
+            from .vocal_gate import apply_track_vocal_gate, track_is_instrumental
+
+            self._track_no_vocals = track_is_instrumental(analysis_data, audio_file_path)
+            profiles = apply_track_vocal_gate(profiles, analysis_data, audio_file_path)
+            if getattr(self, "_final_stem_audio", None) != audio_file_path:
+                # Cached analysis: calibration did not run in this process.
+                self._final_stem_profiles = profiles
+                self._final_stem_audio = audio_file_path
             items = list(analysis_data.get("measure_changes") or []) + list(
                 analysis_data.get("loop_segments") or []
             )
@@ -333,6 +355,104 @@ class CueWriterMixin:
             )
         return cues, loops
 
+    def _measure_final_stem_activity(
+        self, audio_file_path, position, window=4.0, centered=True
+    ):
+        """Re-measure stems at the exact written position (after phrase snap)."""
+        profiles = getattr(self, "_final_stem_profiles", None)
+        if not profiles or getattr(self, "_final_stem_audio", None) != audio_file_path:
+            return None
+        from .stem_evidence import measure_stem_evidence
+
+        ev = measure_stem_evidence(
+            profiles, timestamp=float(position), duration_seconds=window,
+            model_elements=[], centered=centered, strict_drums=False,
+        )
+        return ev.activity
+
+    def _measure_cue_onset(self, audio_file_path, position, beat):
+        """(levels, scores, prev_scores) for the cue's first 2 bars and the 4 bars before."""
+        profiles = getattr(self, "_final_stem_profiles", None)
+        if not profiles or getattr(self, "_final_stem_audio", None) != audio_file_path or not beat:
+            return None
+        from .stem_evidence import VOCAL_CUE_LOOKAHEAD, measure_stem_evidence
+
+        # Vocals are judged over the section (4x the onset window) so a sung phrase that
+        # starts a few bars in still colors the cue yellow; drums/melody stay onset-based.
+        on = measure_stem_evidence(
+            profiles, timestamp=float(position), duration_seconds=8 * beat,
+            model_elements=[], centered=False, strict_drums=False,
+            vocal_lookahead=VOCAL_CUE_LOOKAHEAD,
+        )
+        bar1 = measure_stem_evidence(
+            profiles, timestamp=float(position), duration_seconds=4 * beat,
+            model_elements=[], centered=False, strict_drums=False,
+        ).scores
+        prev = None
+        if position - 16 * beat >= 0:
+            prev = measure_stem_evidence(
+                profiles, timestamp=float(position) - 16 * beat,
+                duration_seconds=16 * beat, model_elements=[], centered=False,
+                strict_drums=False,
+            ).scores
+        return on.activity, on.scores, prev, bar1
+
+    def _section_band_flags(self, audio_file_path, start, drum_seconds, melody_seconds):
+        """Kick-band drums / instruments-band melody for a marker (None if not measured)."""
+        profiles = getattr(self, "_final_stem_profiles", None)
+        if not profiles or getattr(self, "_final_stem_audio", None) != audio_file_path:
+            return None
+        from .stem_evidence import POST_BOUNDARY_OFFSET_SECONDS, section_band_flags
+
+        return section_band_flags(
+            profiles, float(start) + POST_BOUNDARY_OFFSET_SECONDS, drum_seconds, melody_seconds
+        )
+
+    def _drums_stop_after_start(self, audio_file_path, position, beat):
+        """True when drums are on in the first bar but gone over the next two bars."""
+        profiles = getattr(self, "_final_stem_profiles", None)
+        if not profiles or getattr(self, "_final_stem_audio", None) != audio_file_path or not beat:
+            return False
+        from .stem_color import KICK_ON, drum_energy
+        from .stem_evidence import measure_stem_evidence
+
+        first = measure_stem_evidence(
+            profiles, timestamp=float(position), duration_seconds=4 * beat,
+            model_elements=[], centered=False, strict_drums=False,
+        ).scores
+        after = measure_stem_evidence(
+            profiles, timestamp=float(position) + 4 * beat, duration_seconds=8 * beat,
+            model_elements=[], centered=False, strict_drums=False,
+        ).scores
+        return drum_energy(first) >= KICK_ON and drum_energy(after) < 0.20
+
+    def _dsp_seam_ok(self, audio_file_path, start, beats, beat):
+        """Local (no network) wrap test for a loop moved onto its section cue."""
+        try:
+            from .loop_seam_dsp import validate_loop_seam
+            from .loop_seam_gemini import LOOP_SEAM_MIN_HALF_SECONDS, seam_half_seconds
+            from .stems import LOOP_SEAM_WINDOWS
+
+            duration = float(beats) * float(beat)
+            profiles = None
+            if getattr(self, "_final_stem_audio", None) == audio_file_path:
+                profiles = getattr(self, "_final_stem_profiles", None)
+            tested = 0
+            for w in LOOP_SEAM_WINDOWS:
+                if seam_half_seconds(duration, w) < LOOP_SEAM_MIN_HALF_SECONDS:
+                    continue
+                res = validate_loop_seam(
+                    audio_file_path, float(start), duration,
+                    beat_seconds=float(beat), window=w, profiles=profiles,
+                )
+                tested += 1
+                if not res.passed:
+                    return False
+            return tested > 0
+        except Exception as error:
+            print(f"  ⚠️  Local seam test unavailable ({error}) -- loop not moved")
+            return False
+
     def prepare_song_cues(
         self, audio_file_path: str, analysis_data: Dict
     ) -> PreparedSongCues:
@@ -350,6 +470,9 @@ class CueWriterMixin:
         vdj_offset = float(self.get_beatgrid_offset(audio_file_path) or 0.0)
 
         prepared_cues: List[PreparedPoi] = []
+        moved_cue_positions: set = set()  # cues the vocal rule moved (R-08 spacing re-check)
+        nodrum_cue_positions: set = set()
+        drop_positions: set = set()  # green cues that open a new high-energy section
         if scope != WRITE_SCOPE_LOOPS:
             for cue_data in analysis_data.get("measure_changes", [])[:6]:
                 aligned_time = self.validate_timing_hybrid(
@@ -374,11 +497,79 @@ class CueWriterMixin:
                 if not elements:
                     continue
                 gemini_color = cue_data.get("color", "green")
-                color_name = self.validate_color_assignment(
-                    elements,
-                    gemini_color,
-                    cue_data.get("stem_activity"),
-                )
+                _beat = 60.0 / actual if actual else 0.0
+                # Kirill 2026-10-04: no cue on a half-entered vocal (or right after a
+                # breath inside a phrase): move to the clean break before it, or drop.
+                _sp = getattr(self, "_final_stem_profiles", None)
+                if (
+                    _sp
+                    and getattr(self, "_final_stem_audio", None) == audio_file_path
+                    and not getattr(self, "_track_no_vocals", False)
+                    and _vocal_usable(_sp)
+                ):
+                    _new_t, _why_h = resolve_half_entered(
+                        _sp.get("vocal"), aligned_time, _beat, origin=vdj_offset
+                    )
+                    if _new_t is None:
+                        print(
+                            f"  ✂️  Dropped cue '{cue_data.get('cue_name', 'cue')}' @ "
+                            f"{aligned_time:.3f}s: {_why_h}"
+                        )
+                        continue
+                    if _why_h and abs(_new_t - aligned_time) > 1e-6:
+                        print(
+                            f"  ↩️  Cue '{cue_data.get('cue_name', 'cue')}' "
+                            f"{aligned_time:.3f}s -> {_new_t:.3f}s: {_why_h}"
+                        )
+                        aligned_time = _new_t
+                        moved_cue_positions.add(round(float(_new_t), 6))
+                    elif _why_h:
+                        # Kept in place (no clean break within ~2 bars).
+                        print(
+                            f"  ↩️  Cue '{cue_data.get('cue_name', 'cue')}' @ "
+                            f"{aligned_time:.3f}s: {_why_h}"
+                        )
+                onset = self._measure_cue_onset(audio_file_path, aligned_time, _beat)
+                _drop_ok = None
+                if onset is not None:
+                    from .stem_color import classify_onset
+
+                    _lv, _sc, _prev, _bar1 = onset
+                    from .stem_color import gate_opening_vocal
+
+                    _lv, _vwhy = gate_opening_vocal(
+                        _lv, (getattr(self, "_final_stem_profiles", None) or {}).get("vocal"),
+                        aligned_time, _beat, kind="cue",
+                    )
+                    if _vwhy:
+                        print(f"  🎤 cue {aligned_time:.3f}s: {_vwhy}")
+                    _c = classify_onset(
+                        _lv, _sc, _prev, _bar1,
+                        band_flags=self._section_band_flags(
+                            audio_file_path, aligned_time, 4 * _beat, 8 * _beat
+                        ),
+                    )
+                    if not _c["drums"]:
+                        nodrum_cue_positions.add(aligned_time)
+                    color_name, _why, _drop_ok = _c["color"], _c["reason"], _c["drop_ok"]
+                    if color_name in ("green", "purple") and self._drums_stop_after_start(
+                        audio_file_path, aligned_time, _beat
+                    ):
+                        # Kirill 2026-10-04: drums that stop right after the start are a
+                        # break, not a Drop: blue, named by role.
+                        color_name, _why, _drop_ok = "blue", "drums stop right after the start (break)", False
+                    print(
+                        f"  🎨 write {aligned_time:8.3f}s onset kick={_sc.get('kick',0):.2f} "
+                        f"hat={_sc.get('hihat',0):.2f} vox={_lv.get('vocal','-')} "
+                        f"bass={_sc.get('bass',0):.2f} inst={_sc.get('instruments',0):.2f} "
+                        f"step={_c['step']:+.2f} -> {color_name} ({_why})"
+                    )
+                else:
+                    color_name = self.validate_color_assignment(
+                        elements,
+                        gemini_color,
+                        cue_data.get("stem_activity"),
+                    )
                 color_value = self.color_mappings.get(
                     color_name, self.color_mappings["green"]
                 )
@@ -391,6 +582,13 @@ class CueWriterMixin:
                 cue_name = self._refuse_generic_section(
                     self.sanitize_marker_name(cue_name), elements
                 )
+                if _drop_ok is False and re.search(r"\bdrop\b", str(cue_name), re.I):
+                    # Drop only where a NEW high-energy section starts.
+                    new_name = "Breakdown" if color_name == "blue" else "Main Groove"
+                    print(f"  ✏️  {cue_name} @ {aligned_time:.3f}s is not a high-energy step-up -> {new_name}")
+                    cue_name = new_name
+                if _drop_ok and color_name == "green":
+                    drop_positions.add(aligned_time)
                 prepared_cues.append(
                     PreparedPoi(
                         kind="cue",
@@ -403,6 +601,43 @@ class CueWriterMixin:
                     )
                 )
 
+        if nodrum_cue_positions and len(prepared_cues) > 2:
+            # Kirill 2026-10-03: don't cue a middle section that starts with no
+            # drums (jumping there leaves a gap); keep only real intro/outro cues.
+            ordered = sorted(prepared_cues, key=lambda c: c.position)
+            keep = []
+            for i, cue in enumerate(ordered):
+                edge = i == 0 or i == len(ordered) - 1
+                named = re.search(r"\b(intro|outro)\b", cue.name, re.I)
+                if cue.position in nodrum_cue_positions and not edge and not named:
+                    print(f"  ✂️  Dropped cue {cue.name} @ {cue.position:.3f}s: no drums in its first bar")
+                    continue
+                keep.append(cue)
+            prepared_cues = keep
+
+        _hy_beat = 60.0 / (self._actual_bpm(working_bpm) or working_bpm or 120.0)
+        if prepared_cues:
+            # Kirill 2026-10-04: never two cues at one spot; none so near the end that a
+            # jump leaves almost no song (except a genuine blue Outro with >=15 s left).
+            prepared_cues, _dups = dedupe_cues(prepared_cues)
+            for _d in _dups:
+                print(f"  ✂️  Duplicate cue '{_d.name}' @ {_d.position:.3f}s dropped (same spot)")
+            prepared_cues, _crowded = drop_crowded_moved_cues(
+                prepared_cues, moved_cue_positions, _hy_beat
+            )
+            for _d in _crowded:
+                print(
+                    f"  ✂️  Moved cue '{_d.name}' @ {_d.position:.3f}s dropped: closer than "
+                    "32 beats to another cue (R-08)"
+                )
+            if scope != WRITE_SCOPE_LOOPS:
+                prepared_cues, _late = drop_late_cues(prepared_cues, song_length, _hy_beat)
+                for _d in _late:
+                    print(
+                        f"  ✂️  Dropped cue '{_d.name}' @ {_d.position:.3f}s: only "
+                        f"{(song_length or 0) - _d.position:.1f}s of song left"
+                    )
+
         prepared_loops: List[PreparedPoi] = []
         if scope != WRITE_SCOPE_CUES:
             used_loop_names = set()
@@ -410,8 +645,15 @@ class CueWriterMixin:
                 analysis_data.get("loop_segments", []), key=self._loop_priority
             )
             for loop_data in loops:
-                if len(prepared_loops) >= 3:
+                if len(prepared_loops) >= TARGET_MAX_LOOPS:
                     break
+                if not (loop_data.get("seam") or {}).get("passed"):
+                    # Mandatory gate: no passing seam score attached -> never written.
+                    print(
+                        f"🚫 Refused loop '{loop_data.get('loop_name', 'loop')}' at "
+                        f"{loop_data.get('start')}s — no passing seam score attached"
+                    )
+                    continue
                 aligned_time = self.validate_timing_hybrid(
                     loop_data.get("start", 0),
                     working_bpm,
@@ -436,6 +678,70 @@ class CueWriterMixin:
                 elements = loop_data.get("elements", [])
                 if not elements:
                     continue
+                # Kirill 2026-10-04: loops are 16 beats minimum (32 preferred, 64 allowed),
+                # never 8; they start on the phrase [1] of the cue they belong to.
+                _req_beats = int(float(loop_data.get("length_beats", 16) or 16))
+                if _req_beats < MIN_LOOP_BEATS:
+                    print(
+                        f"🚫 Refused {_req_beats}-beat loop '{loop_data.get('loop_name', 'loop')}' "
+                        f"at {loop_data.get('start')}s -- minimum is {MIN_LOOP_BEATS} beats"
+                    )
+                    continue
+                _lb = 60.0 / actual if actual else 0.0
+                # Where the seam gate actually passed (the anchor branch re-tests its spot).
+                _tested = (float(loop_data.get("start", 0) or 0), _req_beats)
+                _cue_ts = [c.position for c in prepared_cues]
+                if _cue_ts and _lb:
+                    _anch = anchor_late_loop(
+                        aligned_time, _req_beats, _lb, _cue_ts, song_length,
+                        seam_ok=lambda st, b: self._dsp_seam_ok(audio_file_path, st, b, _lb),
+                    )
+                    if _anch is not None:
+                        _st, _bt, _k = _anch
+                        print(
+                            f"  ⏪ Loop '{loop_data.get('loop_name', 'loop')}' was {_k} phrase(s) "
+                            f"late ({aligned_time:.3f}s) -> on its section cue {_st:.3f}s x{_bt}"
+                        )
+                        aligned_time = _st
+                        loop_data = dict(loop_data)
+                        loop_data["length_beats"] = _bt
+                        loop_data["start"] = _st
+                        _tested = (float(_st), int(_bt))
+                    else:
+                        from .cue_hygiene import late_by_phrases
+
+                        if late_by_phrases(_cue_ts, aligned_time, _lb):
+                            print(
+                                f"  ⚠️  Loop @ {aligned_time:.3f}s is a phrase late vs its cue and "
+                                "could not be re-anchored (seam/length) -- kept where it passed"
+                            )
+                if _lb:
+                    # Kirill's own loops always end at or before the next cue (69/69 on the
+                    # bench): fit to the next cue and the song end, 64 -> 32 -> 16 beats.
+                    _cur = int(float(loop_data.get("length_beats", 16) or 16))
+                    _fit = fit_loop_beats(
+                        aligned_time, _cur, _lb, [c.position for c in prepared_cues], song_length
+                    )
+                    if _fit is None:
+                        print(
+                            f"  ✂️  Loop @ {aligned_time:.3f}s does not fit 16 beats before the "
+                            "next cue / song end"
+                        )
+                        continue
+                    if _fit < _cur:
+                        loop_data = dict(loop_data)
+                        loop_data["length_beats"] = _fit
+                if _lb:
+                    _final_beats = int(float(loop_data.get("length_beats", 16) or 16))
+                    _seam_ok, _seam_why = final_loop_seam_ok(
+                        _tested[0], _tested[1], aligned_time, _final_beats,
+                        lambda st, b: self._dsp_seam_ok(audio_file_path, st, b, _lb),
+                    )
+                    if not _seam_ok:
+                        print(f"🚫 Refused loop '{loop_data.get('loop_name', 'loop')}': {_seam_why}")
+                        continue
+                    if _seam_why:
+                        print(f"  📐 Loop '{loop_data.get('loop_name', 'loop')}': {_seam_why}")
                 loop_name = loop_data.get("loop_name") or self.create_loop_name(elements)
                 loop_name = _with_loop_suffix(
                     self._refuse_generic_section(
@@ -449,14 +755,60 @@ class CueWriterMixin:
                     ))
                 used_loop_names.add(loop_name)
                 gemini_color = loop_data.get("color", "green")
-                color_name = self.validate_color_assignment(
-                    elements,
-                    gemini_color,
-                    loop_data.get("stem_activity"),
+                _loop_beat = 60.0 / actual if actual else 0.0
+                _loop_len = float(loop_data.get("length_beats", 16)) * _loop_beat
+                # Color from the WHOLE loop (a vocal entering mid-loop counts).
+                final_act = self._measure_final_stem_activity(
+                    audio_file_path, aligned_time,
+                    window=_loop_len if _loop_len > 0 else 4.0,
+                    centered=False,
                 )
+                if final_act is not None:
+                    from .stem_color import color_from_stems, gate_opening_vocal
+
+                    final_act, _vwhy = gate_opening_vocal(
+                        final_act, (getattr(self, "_final_stem_profiles", None) or {}).get("vocal"),
+                        aligned_time, _loop_beat, kind="loop",
+                    )
+                    if _vwhy:
+                        print(f"  🎤 loop {aligned_time:.3f}s: {_vwhy}")
+
+                    _span = _loop_len if _loop_len > 0 else 4.0
+                    color_name, _why = color_from_stems(
+                        final_act,
+                        band_flags=self._section_band_flags(
+                            audio_file_path, aligned_time - 0.25, _span, _span
+                        ),
+                    )
+                    print(f"  🎨 loop  {aligned_time:8.3f}s -> {color_name} ({_why})")
+                else:
+                    color_name = self.validate_color_assignment(
+                        elements,
+                        gemini_color,
+                        loop_data.get("stem_activity"),
+                    )
+                # Kirill 2026-10-04: Drum Loops are purple (drums) unless real vocals.
+                if (
+                    loop_data.get("loop_type") == "Drum"
+                    or str(loop_name).startswith("Drum Loop")
+                ) and color_name == "green":
+                    color_name = "purple"
+                    print("  🎨 Drum Loop -> purple (drum-led)")
                 color_value = self.color_mappings.get(
                     color_name, self.color_mappings["green"]
                 )
+                # Kirill 2026-10-04: loops never overlap; keep the higher-priority one.
+                _new_end = aligned_time + _loop_len
+                if any(
+                    aligned_time < q.position + float(q.length_beats or 0) * _loop_beat + _loop_beat
+                    and q.position < _new_end + _loop_beat
+                    for q in prepared_loops
+                ):
+                    print(
+                        f"  ✂️  Dropped overlapping loop '{loop_name}' @ {aligned_time:.3f}s"
+                    )
+                    used_loop_names.discard(loop_name)
+                    continue
                 prepared_loops.append(
                     PreparedPoi(
                         kind="loop",
@@ -481,6 +833,22 @@ class CueWriterMixin:
                 )
             else:
                 prepared_cues = existing_cues
+                if os.environ.get("AUTOCUE_KEEP_EXISTING_LOOPS") == "1":
+                    # Add seam-passing loops next to the ones Kirill already has.
+                    kept = list(existing_loops)
+                    extra = [
+                        lp for lp in prepared_loops
+                        if all(abs(lp.position - k.position) > 6.0 for k in kept)
+                    ]
+                    prepared_loops = kept + extra
+                    seen: dict = {}
+                    renamed = []
+                    for lp in sorted(prepared_loops, key=lambda x: x.position):
+                        base = re.sub(r"\s+\d+$", "", lp.name.strip())
+                        seen[base] = seen.get(base, 0) + 1
+                        nm = base if seen[base] == 1 else f"{base} {seen[base]}"
+                        renamed.append(lp if nm == lp.name else replace(lp, name=nm))
+                    prepared_loops = renamed
                 print(
                     f"  🔒 Loops-only retry: keeping {len(prepared_cues)} existing "
                     f"cue(s), rewriting {len(prepared_loops)} loop(s)"
@@ -499,21 +867,71 @@ class CueWriterMixin:
         if scope == WRITE_SCOPE_CUES:
             prepared_loops = list(prepared_loops)
         else:
+            # Keep exactly the seam-tested loops (position + length). The old
+            # ensure_loops_on_user_one slid copies onto the 1 as 8-beat loops,
+            # which were never seam-tested.
             parked = _unique_poi_names(
-                ensure_loops_on_user_one(
-                    vdj_offset,
-                    prepared_loops,
-                    bpm=float(actual_for_loops or 0),
-                    song_length=song_length,
+                pin_markers_to_user_one(vdj_offset, prepared_loops)[:TARGET_MAX_LOOPS]
+            )
+            # The cue's color is decided by the onset rule (or already on disk)
+            # and is never repainted by a loop; a co-located loop adopts it.
+            prepared_loops = [
+                replace(
+                    lp,
+                    color_name=co.color_name,
+                    color_value=co.color_value,
                 )
+                if (co := next((c for c in prepared_cues if abs(c.position - lp.position) <= 0.05), None))
+                else lp
+                for lp in parked
+            ]
+        _one_half_entered = False
+        _sp1 = getattr(self, "_final_stem_profiles", None)
+        if (
+            scope != WRITE_SCOPE_LOOPS
+            and _sp1
+            and getattr(self, "_final_stem_audio", None) == audio_file_path
+            and not getattr(self, "_track_no_vocals", False)
+            and _vocal_usable(_sp1)
+        ):
+            # Kirill 2026-10-04: the automatic cue on the disk's 1 is subject to the
+            # same half-entered-vocal rule (nothing earlier to move to -> skip it).
+            _beat1h = 60.0 / (self._actual_bpm(working_bpm) or working_bpm or 120.0)
+            _t1, _why1 = resolve_half_entered(
+                _sp1.get("vocal"), float(vdj_offset), _beat1h, origin=float(vdj_offset)
             )
-            prepared_cues, prepared_loops = _share_frequency_colors(
-                prepared_cues, parked, disk_one=vdj_offset
-            )
-        if scope != WRITE_SCOPE_LOOPS and not has_marker_on_user_one(
-            vdj_offset, prepared_cues
+            # The cue on the 1 belongs on the 1: a move (now possible either way) means the
+            # downbeat itself is not clean, so skip it as before.
+            if _t1 is None or abs(float(_t1) - float(vdj_offset)) > 1e-6:
+                _one_half_entered = True
+                print(
+                    f"  ✂️  No cue on the 1 @ {float(vdj_offset):.3f}s: {_why1}"
+                )
+        if (
+            scope != WRITE_SCOPE_LOOPS
+            and not _one_half_entered
+            and not has_marker_on_user_one(vdj_offset, prepared_cues)
         ):
             color_name = "green"
+            _beat1 = 60.0 / (self._actual_bpm(working_bpm) or working_bpm or 120.0)
+            _on1 = self._measure_cue_onset(audio_file_path, float(vdj_offset), _beat1)
+            if _on1 is not None:
+                from .stem_color import classify_onset
+
+                from .stem_color import gate_opening_vocal
+
+                _lv1, _ = gate_opening_vocal(
+                    _on1[0], (getattr(self, "_final_stem_profiles", None) or {}).get("vocal"),
+                    float(vdj_offset), _beat1, kind="cue",
+                )
+                _c1 = classify_onset(
+                    _lv1, _on1[1], _on1[2], _on1[3],
+                    band_flags=self._section_band_flags(
+                        audio_file_path, float(vdj_offset), 4 * _beat1, 8 * _beat1
+                    ),
+                )
+                color_name = _c1["color"]
+                print(f"  🎨 cue on the 1 colored from stems -> {color_name} ({_c1['reason']})")
             color_value = self.color_mappings.get(
                 color_name, self.color_mappings["green"]
             )
@@ -533,6 +951,8 @@ class CueWriterMixin:
                 f"🎯 Inserted cue 1 on the disk 1 at {vdj_offset:.3f}s "
                 f"(Gemini had no marker there)"
             )
+        from .stem_naming import is_song_ending
+
         used_names: list[str] = []
         unique_cues: List[PreparedPoi] = []
         for index, cue in enumerate(prepared_cues):
@@ -541,6 +961,16 @@ class CueWriterMixin:
             )
             if index == 0 and (name in {"1", ""} or "section" in name.lower()):
                 name = "Beat Entry"
+            if (
+                index == len(prepared_cues) - 1
+                and len(prepared_cues) > 1
+                and any(abs(cue.position - np_) < 0.1 for np_ in nodrum_cue_positions)
+                and "outro" not in name.lower()
+                and "Outro" not in used_names
+                and is_song_ending(cue.position, song_length, beat=_hy_beat,
+                                   later_positions=[l.position for l in prepared_loops])
+            ):
+                name = "Outro"  # Kirill 2026-10-04: a no-drums last cue is an Outro
             if name in used_names:
                 name = _next_distinct_part(set(used_names))
             used_names.append(name)
@@ -549,6 +979,86 @@ class CueWriterMixin:
                 cue = replace(cue, name=name)
             unique_cues.append(cue)
         prepared_cues = unique_cues
+        if scope == WRITE_SCOPE_ALL and os.environ.get("AUTOCUE_STEM_NAMING", "1") == "1":
+            from .stem_naming import drop_cues_under_loops, name_from_stems
+
+            prepared_cues, _dropped = drop_cues_under_loops(
+                prepared_cues, prepared_loops, eps=0.25
+            )
+            if _dropped:
+                print(
+                    "  ✂️  Cue under a loop dropped: "
+                    + ", ".join(f"{c.name}@{c.position:.2f}" for c in _dropped)
+                )
+            prepared_cues, prepared_loops = name_from_stems(
+                prepared_cues, prepared_loops,
+                color_values=self.color_mappings, first_one=float(vdj_offset),
+                drop_positions=drop_positions,
+                song_length=song_length, beat=_hy_beat,
+            )
+            prepared_cues = rename_final_chorus(prepared_cues, song_length, _hy_beat)
+            print(
+                "  🏷️  Stem names: "
+                + ", ".join(c.name for c in prepared_cues)
+                + " | "
+                + ", ".join(l.name for l in prepared_loops)
+            )
+        from .stem_naming import enforce_vocal_names
+
+        _fix_cues, _fix_loops = enforce_vocal_names(
+            prepared_cues if scope != WRITE_SCOPE_LOOPS else [],
+            prepared_loops if scope != WRITE_SCOPE_CUES else [],
+        )
+        if scope != WRITE_SCOPE_LOOPS:
+            prepared_cues = rename_final_chorus(_fix_cues, song_length, _hy_beat)
+        if scope != WRITE_SCOPE_CUES:
+            prepared_loops = _fix_loops
+        # Kirill 2026-10-05 (R-09): never recreate a cue/loop the user deleted
+        # in the Music Sorter UI (deleted_markers.json). Runs AFTER other hygiene
+        # so a deleted marker that was re-proposed still gets filtered, including
+        # the automatic cue on the disk's 1.
+        from .deleted_markers import filter_deleted
+
+        _fc_del, _fl_del, _del_msgs = filter_deleted(
+            prepared_cues if scope != WRITE_SCOPE_LOOPS else [],
+            prepared_loops if scope != WRITE_SCOPE_CUES else [],
+            audio_file_path,
+        )
+        for _m in _del_msgs:
+            print(f"  ✂️  Skipped {_m}")
+        # Cues-only / loops-only retries keep the other kind from disk; only
+        # replace the kind we just (re)built.
+        if scope != WRITE_SCOPE_LOOPS:
+            prepared_cues = _fc_del
+        if scope != WRITE_SCOPE_CUES:
+            prepared_loops = _fl_del
+        # Never replace a song's markers with nothing (Kirill 2026-10-08: a re-cue of
+        # "How Deep Is Your Love" found 0 cues / 0 loops and removed 3 hand-made loops).
+        # A side the new plan has nothing for keeps what is on disk; nothing new -> no write.
+        # The automatic cue on the disk's 1 (elements ["downbeat"]) is not a finding.
+        new_cues = (
+            any(list(c.elements) != ["downbeat"] for c in prepared_cues)
+            if scope != WRITE_SCOPE_LOOPS
+            else False
+        )
+        new_loops = bool(prepared_loops) if scope != WRITE_SCOPE_CUES else False
+        nothing_to_write = not new_cues and not new_loops
+        if scope == WRITE_SCOPE_ALL and not nothing_to_write and not (new_cues and new_loops):
+            existing_cues, existing_loops = self._load_existing_prepared_pois(audio_file_path)
+            if not new_loops and existing_loops:
+                prepared_loops = existing_loops
+                print(
+                    f"  🔒 No new loops: keeping {len(existing_loops)} existing loop(s)"
+                )
+            if not new_cues and existing_cues:
+                prepared_cues = existing_cues
+                print(f"  🔒 No new cues: keeping {len(existing_cues)} existing cue(s)")
+        if nothing_to_write:
+            print("  🛑 Nothing new to write for this scope; the song's markers stay as they are")
+        elif os.environ.get("AUTOCUE_MARKER_GUARD", "1") != "0":
+            prepared_cues, prepared_loops = self._apply_marker_guard(
+                audio_file_path, prepared_cues, prepared_loops, scope, _hy_beat, float(vdj_offset)
+            )
         print(
             f"🎯 User 1 at {vdj_offset:.3f}s · "
             f"{len(prepared_cues)} cue(s) / {len(prepared_loops)} loop(s) "
@@ -564,7 +1074,42 @@ class CueWriterMixin:
             beatgrid_offset=vdj_offset,
             beatgrid_corrected=False,
             comment=self.sanitize_xml_content(" ".join(used_colors)),
+            nothing_to_write=nothing_to_write,
         )
+
+    def _apply_marker_guard(self, audio_file_path, cues, loops, scope, beat, offset):
+        """R-88 writer guard (Kirill/TL 2026-10-12): Kirill's markers are kept exactly; AutoCue
+        only adds, or replaces its own untouched markers (marker_guard)."""
+        from dataclasses import replace as _replace
+
+        from .marker_guard import existing_as_prepared, guard_plan, last_written
+
+        try:
+            if self.vdj_database_path and os.path.exists(self.vdj_database_path):
+                ex_cues, ex_loops = existing_as_prepared(audio_file_path, self.vdj_database_path)
+            else:  # no database file (tests / injected loaders): use the existing-marker loader
+                ex_cues, ex_loops = self._load_existing_prepared_pois(audio_file_path)
+        except Exception as error:
+            raise RuntimeError(f"writer guard could not read the song's markers ({error}); refusing") from error
+        if not ex_cues and not ex_loops:
+            return cues, loops
+        ex_cues = [_replace(c, color_name=self._color_name_for_value(c.color_value)) for c in ex_cues]
+        ex_loops = [_replace(l, color_name=self._color_name_for_value(l.color_value)) for l in ex_loops]
+        written = last_written(audio_file_path)
+        # Only the side(s) this scope rewrites get new proposals; the other side is all existing.
+        new_c = [c for c in cues if "preserved" not in (c.elements or [])] if scope != WRITE_SCOPE_LOOPS else []
+        new_l = [l for l in loops if "preserved" not in (l.elements or [])] if scope != WRITE_SCOPE_CUES else []
+        res = guard_plan(new_c, new_l, ex_cues, ex_loops, written, beat=beat, offset=offset)
+        print(f"  🛡️  Writer guard ({res.source}): kept {len(res.kept_hand)} marker(s) of Kirill's, "
+              f"replacing {len(res.replaced_own)} untouched AutoCue marker(s)")
+        for m in res.kept_hand:
+            extra = f" x{m.length_beats:g}" if m.kind == "loop" else ""
+            print(f"     🔒 kept {m.kind} '{m.name}' @ {m.position:.3f}{extra} (hand-made/edited)")
+        for m in res.replaced_own:
+            print(f"     ♻️  replaces own {m.kind} '{m.name}' @ {m.position:.3f}")
+        for m, why in res.dropped_new:
+            print(f"     ✂️  new {m.kind} '{m.name}' @ {m.position:.3f} dropped: {why}")
+        return res.cues, res.loops
 
     def _build_native_poi_lines(
         self, prepared: PreparedSongCues, newline: str = "\r\n"
@@ -585,7 +1130,7 @@ class CueWriterMixin:
                     cue.position,
                     "cue",
                     {
-                        "pos": cue.position,
+                        "pos": max(0.0, cue.position),
                         "poi_type": "cue",
                         "num": num,
                         "color": cue.color_value,
@@ -599,7 +1144,7 @@ class CueWriterMixin:
                     loop.position,
                     "loop",
                     {
-                        "pos": loop.position,
+                        "pos": max(0.0, loop.position),
                         "poi_type": "loop",
                         "num": "-1",
                         "color": loop.color_value,
@@ -752,8 +1297,16 @@ class CueWriterMixin:
         self, audio_file_path: str, analysis_data: Dict, dry_run: bool = False
     ) -> bool:
         """Apply analysis results using one prepared plan and a surgical DB rewrite."""
+        self.last_apply_note = ""
         try:
             prepared = self.prepare_song_cues(audio_file_path, analysis_data)
+            if prepared.nothing_to_write:
+                self.last_apply_note = (
+                    "AutoCue found no usable new cues or loops for this song; "
+                    "nothing was written and its existing markers were kept."
+                )
+                print(f"🛑 {self.last_apply_note}")
+                return False
             if dry_run:
                 return self._preview_prepared_cues(audio_file_path, prepared)
 
@@ -784,9 +1337,21 @@ class CueWriterMixin:
                 audio_file_path,
                 updated_song_xml,
                 validate=True,
+                base_song_xml=original_song_xml,
             )
             # Metadata may have changed (beatgrid/cues); force refresh next read.
             self._invalidate_metadata_cache()
+            try:  # R-88: remember exactly what AutoCue wrote (Kirill's kept markers excluded)
+                from .marker_guard import save_written
+
+                save_written(
+                    audio_file_path,
+                    [m for m in list(prepared.cues) + list(prepared.loops)
+                     if "kirill" not in (m.elements or [])],
+                    job_id=os.environ.get("AUTOCUE_JOB_ID", ""),
+                )
+            except Exception as rec_error:
+                print(f"  ⚠️  Could not record AutoCue's write ({rec_error}); next run keeps all markers")
 
             scope = self._write_scope()
             if scope == WRITE_SCOPE_CUES:

@@ -59,7 +59,13 @@ def _ingest_locks(labels_path: Path) -> Iterator[None]:
             yield
 
 
+class SummaryUnavailable(RuntimeError):
+    """The song's cues could not be read (no Music Sorter UI on the path, database unreadable)."""
+
+
 def _resolve_summary(path: str | Path, summary: Any, database_path: Path | None) -> Any:
+    """The song's current cue summary. Raises SummaryUnavailable when it cannot be read, which
+    is never the same as "the song has no cues": that would drop its labels and retrain."""
     if summary is not None:
         return summary
     try:
@@ -67,10 +73,14 @@ def _resolve_summary(path: str | Path, summary: Any, database_path: Path | None)
 
         ensure_ui_on_path()
         from sorter.relocate import summarize_cues
-
+    except Exception as exc:
+        raise SummaryUnavailable(
+            f"Music Sorter UI not importable ({exc.__class__.__name__}: {exc}); set VDJ_SORTER_UI_DIR"
+        ) from exc
+    try:
         return summarize_cues(path, database_path)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise SummaryUnavailable(f"cues not readable ({exc.__class__.__name__}: {exc})") from exc
 
 
 def ingest_cued_track(
@@ -105,7 +115,12 @@ def ingest_cued_track(
         if not is_training_source_path(track_id):
             result["reason"] = "not_training_source"
             return result
-        resolved = _resolve_summary(track_id, summary, database_path)
+        try:
+            resolved = _resolve_summary(track_id, summary, database_path)
+        except SummaryUnavailable as exc:  # labels and model stay exactly as they are
+            log.warning("ML ingest skipped for %s: %s", track_id, exc)
+            result["reason"] = f"summary_unavailable: {exc}"
+            return result
         if not has_training_cue_points(resolved):
             with _ingest_locks(dest):
                 dropped = drop_track_rows(dest, track_id)

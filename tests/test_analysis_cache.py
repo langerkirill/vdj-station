@@ -50,6 +50,32 @@ class AnalysisCacheTests(unittest.TestCase):
             self.assertEqual(hit["measure_changes"][0]["name"], "Intro")
             self.assertEqual(len(hit["loop_segments"]), 2)
 
+    def test_miss_when_analysis_code_changes(self) -> None:
+        """A cached analysis from older AutoCue code is not reused (stem rules changed)."""
+        from unittest.mock import patch
+        import vdj_cuer.analysis_cache as AC
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = _write_audio(root)
+            analysis = {
+                "measure_changes": [{"timestamp": 0.47, "name": "Intro"}],
+                "loop_segments": [{"start": 0.47, "length": 8}, {"start": 16.0, "length": 8}],
+            }
+            with patch.object(AC, "analysis_code_id", return_value="old-build"):
+                save_cached_analysis(audio, analysis, cache_dir=root / "cache")
+                self.assertIsNotNone(load_cached_analysis(audio, cache_dir=root / "cache"))
+            with patch.object(AC, "analysis_code_id", return_value="new-build"):
+                self.assertIsNone(load_cached_analysis(audio, cache_dir=root / "cache"))
+
+    def test_analysis_code_id_covers_the_stem_analysis_modules(self) -> None:
+        import vdj_cuer.analysis_cache as AC
+
+        names = {p.name for p in AC.analysis_code_files()}
+        for must in ("stems.py", "stem_evidence.py", "gemini_analysis.py", "precision_gate.py"):
+            self.assertIn(must, names)
+        self.assertRegex(AC.analysis_code_id(), r"^[0-9a-f]{12}$")
+
     def test_miss_when_audio_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

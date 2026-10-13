@@ -1,0 +1,13 @@
+# What vdj-autocue-<version>-tests.tar.gz holds: everything the Mac's test gate needs next to the
+# installed package (the wheel). build_release_assets.sh packs these paths with git archive
+# (git pathspecs: a :(exclude) line leaves that path out).
+tests
+ui
+bench
+:(exclude)bench/improve-partial
+pyproject.toml
+CHANGELOG.md
+cue_accuracy_benchmark.py
+cue_visual_audit.py
+docs/autocue-lab/known_test_failures.txt
+docs/autocue-lab/autoupdate

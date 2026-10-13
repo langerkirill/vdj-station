@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -21,9 +23,29 @@ from .features import (
 )
 
 SCHEMA = 1
-DEFAULT_ARTIFACT = (
-    Path(__file__).resolve().parent / "artifacts" / "cue_bar_clf.joblib"
-)
+SHIPPED_ARTIFACT = Path(__file__).resolve().parent / "artifacts" / "cue_bar_clf.joblib"
+
+
+def _default_artifact() -> Path:
+    """VDJ_AUTOCUE_MODEL_DIR: one shared model folder that every installed AutoCue release
+    loads and retrains (the Mac auto-updater installs each version into its own folder, which
+    is deleted later, so a retrain must never save inside it). Unset: the shipped model."""
+    shared = os.environ.get("VDJ_AUTOCUE_MODEL_DIR", "").strip()
+    if shared:
+        return Path(shared).expanduser() / SHIPPED_ARTIFACT.name
+    return SHIPPED_ARTIFACT
+
+
+DEFAULT_ARTIFACT = _default_artifact()
+
+
+def model_load_path(path: Path | None = None) -> Path:
+    """The model file to load. A shared folder with no model yet loads the shipped one
+    until the first retrain saves there."""
+    dest = Path(path) if path else DEFAULT_ARTIFACT
+    if dest == DEFAULT_ARTIFACT != SHIPPED_ARTIFACT and not dest.is_file():
+        return SHIPPED_ARTIFACT
+    return dest
 
 
 @dataclass(frozen=True)
@@ -501,9 +523,17 @@ def save_cue_bar_model(
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "metrics": metrics or {},
     }
-    joblib.dump(payload, dest)
+    # temp file + rename: a retrain killed mid-save (ingest timeout) never leaves a cut-off
+    # model where every AutoCue run loads it
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
+    try:
+        joblib.dump(payload, tmp)
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
     sidecar = dest.with_suffix(".json")
-    sidecar.write_text(
+    sidecar_tmp = sidecar.with_name(f".{sidecar.name}.{os.getpid()}.tmp")
+    sidecar_tmp.write_text(
         json.dumps(
             {
                 "schema": SCHEMA,
@@ -515,16 +545,30 @@ def save_cue_bar_model(
         ),
         encoding="utf-8",
     )
+    os.replace(sidecar_tmp, sidecar)
     return dest
 
 
 def load_cue_bar_model(path: Path | None = None) -> Optional[CueBarModel]:
+    dest = model_load_path(path)
+    model = _load_cue_bar_file(dest)
+    if model is None and dest == DEFAULT_ARTIFACT != SHIPPED_ARTIFACT and dest.is_file():
+        # the shared model is unreadable or made for other features: the shipped one, not none
+        logging.getLogger(__name__).warning("cue model %s unusable; using %s", dest, SHIPPED_ARTIFACT)
+        model = _load_cue_bar_file(SHIPPED_ARTIFACT)
+    return model
+
+
+def _load_cue_bar_file(dest: Path) -> Optional[CueBarModel]:
     import joblib
 
-    dest = Path(path) if path else DEFAULT_ARTIFACT
     if not dest.is_file():
         return None
-    payload = joblib.load(dest)
+    try:
+        payload = joblib.load(dest)
+    except Exception:  # unreadable file: AutoCue runs without the model rather than failing
+        logging.getLogger(__name__).warning("cue model %s could not be loaded", dest, exc_info=True)
+        return None
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
         return None
     names = tuple(payload.get("feature_names") or MODEL_FEATURE_NAMES)

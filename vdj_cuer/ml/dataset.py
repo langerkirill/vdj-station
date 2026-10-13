@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -29,7 +30,11 @@ ProgressFn = Callable[[str], None]
 
 
 def ensure_ui_on_path() -> Path:
-    ui_dir = Path(__file__).resolve().parents[2] / "ui"
+    """The Music Sorter UI (its ``sorter`` package) for training labels: the sorter that runs
+    AutoCue sets VDJ_SORTER_UI_DIR (run_sorter.sh); a git checkout has it at ui/. An installed
+    AutoCue package has no ui/ of its own."""
+    override = os.environ.get("VDJ_SORTER_UI_DIR", "").strip()
+    ui_dir = Path(override).expanduser() if override else Path(__file__).resolve().parents[2] / "ui"
     if str(ui_dir) not in sys.path:
         sys.path.insert(0, str(ui_dir))
     return ui_dir

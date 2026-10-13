@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -78,7 +79,8 @@ class VirtualDJRunningWriteGuardTests(unittest.TestCase):
                 "<!--" + ("g" * (safety.WIPE_SIZE_BYTES + 80)) + "-->\r\n</VirtualDJ_Database>\r\n",
             )
             db.write_bytes(body.encode("utf-8"))
-            safety._LAST_AUTO_GOLDEN_MONO = 0.0
+            # Throttle window already elapsed (0.0 is not enough on a freshly booted host).
+            safety._LAST_AUTO_GOLDEN_MONO = time.monotonic() - safety._AUTO_GOLDEN_MIN_INTERVAL_SEC - 1
             with patch.object(safety, "is_virtualdj_running", return_value=False):
                 safety.atomic_replace_database(db, body, original_stats=None)
             goldens = list(Path(tmp).glob(f"{safety.AUTO_GOLDEN_PREFIX}*"))

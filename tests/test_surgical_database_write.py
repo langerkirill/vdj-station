@@ -1,3 +1,4 @@
+import os
 """Tests for low-memory surgical VirtualDJ database rewrites."""
 
 import tempfile
@@ -177,9 +178,12 @@ class CueWriterSurgicalPathTests(unittest.TestCase):
                     with patch.object(
                         cuer, "validate_timing_hybrid", side_effect=lambda t, *a, **k: t
                     ):
-                        success = cuer._apply_cues_to_database(
-                            "/music/target.flac", analysis, dry_run=False
-                        )
+                        # Surgical-path test: no AutoCue record, so the R-88 guard would
+                        # (rightly) keep 'Stale' as Kirill's; it is covered in test_marker_guard.
+                        with patch.dict(os.environ, {"AUTOCUE_MARKER_GUARD": "0"}):
+                            success = cuer._apply_cues_to_database(
+                                "/music/target.flac", analysis, dry_run=False
+                            )
 
             self.assertTrue(success)
             full_parse.assert_not_called()

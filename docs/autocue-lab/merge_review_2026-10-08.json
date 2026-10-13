@@ -1,0 +1,728 @@
+[
+ {
+  "verdict": "safe_with_fixes",
+  "summary": "Nothing in 3bc4a77 would be lost by committing from /Users/kirilllanger/src/vdj-station. Its tree has 267 files, and all 267 exist in the station working tree. 259 are byte-identical (checked by blob hash with `git hash-object --no-filters`). That includes vdj_cuer/core.py, vdj_cuer/file_processor.py, vdj_database_safety.py and both ML artifacts, which also match the merge/*.station inputs exactly. The other 8 files differ, and in every case station is a strict superset or a later version. Every line removed from the 3bc4a77 copy is either rewritten in an extended form or is the one-word rename \"Melody Loop\" to \"Melodic Loop\". No hunk in 3bc4a77 is missing from station. No 3bc4a77 file is missing or gitignored in station: running `check-ignore --no-index` on all 267 paths returned nothing. Station also has 4 new test files that 3bc4a77 lacks (tests/test_band_drum_melody.py, test_final_loop_seam.py, test_vocal_pickup.py, test_voice_band_vocals.py, all modified Oct 8 16:51 to 17:27). The 8 differing station files all parse with ast.\n\nTwo premises in the task are out of date, as shown by a read-only `git ls-remote` against GitHub. (1) zouk is not unpushed: refs/heads/zouk on GitHub is 3bc4a77. (2) GitHub main is no longer d73e430. It is 834ba38 (\"House/Sauna Fest: promote live fest11 (20261005-house-sauna-fest11) to main\", 2026-10-05 07:38, parent d73e430, 111 files, +16785/-2965). The station clone's origin/main has not been fetched and still points at d73e430. 834ba38 is essentially the House fork. All 277 of its files exist in /Users/kirilllanger/src/vdj-station-house, and only 12 differ (README.md, ui/README_HOUSE.md, ui/app.py, ui/sorter/practice_analyze.py, practice_sets.py, ui/static/app.js, index.html, styles.css, 2 ui tests, and the 2 ML artifacts). House vdj_cuer/core.py, vdj_cuer/file_processor.py and vdj_database_safety.py are byte-identical to 834ba38. So House's AutoCue fixes are already on GitHub main, and the station's AutoCue work is on zouk and in the station working tree. Compared with 834ba38, station is missing 28 files and has 71 that differ. A commit made from station on top of local main d73e430 would therefore diverge from origin/main and the push would be rejected. A force-push would remove the House version from GitHub main.",
+  "issues": [
+   {
+    "severity": "info",
+    "file": "vdj_cuer/audio_cache.py",
+    "detail": "Station is a strict superset. The 3bc4a77 copy has `StemProfile.decode(path, voice=(stem_name == \"vocal\"))`. Station (audio_cache.py:9 and 33-38) imports ENERGY_BAND_STEMS and VOICE_BAND_STEMS and adds the band= and energy= arguments. Nothing from 3bc4a77 is dropped."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/cue_hygiene.py",
+    "detail": "Station is a strict superset (+104/-7). New in station: the VOICE_FINE_HOP_SECONDS import (:22), the PICKUP_* constants (:45-55), _fine and vocal_line_starts_before (:106-140), a voice-band quiet check in vocal_is_quiet_at (:143-153), the pickup check in clean_break_before (:176-180), _entry_problem and resolve_half_entered generalised to take a reason (:185-207), and SEAM_RETEST_TOL_SECONDS with final_loop_seam_ok (:323-349). The 7 removed lines are the old bodies of vocal_is_quiet_at and resolve_half_entered, which station rewrites with the same behaviour plus the new checks."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/cue_writer.py",
+    "detail": "Station is a strict superset (+45/-3). New in station: the final_loop_seam_ok import (:16), the _section_band_flags helper (:396-406), and seam re-testing where the loop is actually written (:670-671, :688, :706-716). Three call sites now pass band_flags: classify_onset at :533-538 and :884-889, and color_from_stems at :741-747. The only removed lines are the three original calls, which station replaces with these extended calls."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/stem_evidence.py",
+    "detail": "Station is a strict superset (+184/-4). New in station: voice-band and full-band constants (VOICE_BAND_HZ through MELODY_BAND_REL, VOICE_BAND_STEMS, ENERGY_BAND_STEMS), decode() taking band= and energy= (:146-153, :190-218), _voice_band_window_present, voice_band_frames, _band_window_rel, section_band_flags (:428) and _voice_band_usable. load_stem_profiles is extended (:406-411). The removed lines are only the old decode signature, the `if voice:` import placement and the old load_stem_profiles call."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/stem_color.py",
+    "detail": "Station is a strict superset (+15/-4). color_from_stems (:37-47) and classify_onset (:82, :99-100) gain an optional band_flags argument that overrides drums and melody when measured. Station also adds the Optional import. Default behaviour is unchanged."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/stems.py",
+    "detail": "Station is a strict superset (+12/-2) and a later edit: the file mtime is 2026-10-05 08:54, after 3bc4a77 at 07:40. It adds _loop_type_display_name (:963-967, docstring 'TL 2026-10-05: prefer Melodic Loop (not Melody Loop)') and uses it for loop_name (:1284, :1292-1295). The only cosmetic issue is a whitespace-only line at :962."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/stem_naming.py",
+    "detail": "Station is the later version (mtime 2026-10-05 08:54). The one-line change at :22 replaces 'Melody Loop' with 'Melodic Loop' in LOOP_POOL['blue']. The test files are identical in both trees and already expect 'Melodic Loop' (tests/test_stem_evidence.py:361, tests/test_loop_target.py:95,112)."
+   },
+   {
+    "severity": "info",
+    "file": "vdj_cuer/loop_seam_dsp.py",
+    "detail": "Station is the later version. The only change is in a comment at :166, where '064 Melody Loop 165.246' becomes '064 Melodic Loop 165.246'. This affects documentation only and not behaviour."
+   },
+   {
+    "severity": "high",
+    "file": "(repo refs) GitHub langerkirill/vdj-station main",
+    "detail": "The task premise is stale. `git ls-remote` shows GitHub main = 834ba38 (House fork promoted to main on 2026-10-05 07:38) and zouk = 3bc4a77, already pushed. The station clone's origin/main still points at d73e430 because it has not been fetched. House core.py, file_processor.py and vdj_database_safety.py are byte-identical to 834ba38, so the House AutoCue fixes already live on GitHub main. Compared with 834ba38, the station working tree is missing 28 files (e.g. ui/README_HOUSE.md, ui/sorter/house_*.py, ui/sorter/profile.py, ui/sorter/safe_write.py, ui/sorter/fs_guard.py, ui/sorter/deleted_markers.py, tests/conftest.py, ui/start_8788*.sh and many ui/tests) and has 71 that differ. A commit from station on local main would not fast-forward onto origin/main.",
+    "fix": "Before committing, fetch in station and decide where the commit goes. Either branch from the station tree (zouk lineage) and merge origin/main 834ba38 into it, carrying the vdj_cuer/core.py, file_processor.py and vdj_database_safety.py 3-way merge results. Or commit on top of 834ba38. Never force-push main."
+   },
+   {
+    "severity": "low",
+    "file": "(station working tree, untracked)",
+    "detail": "The station working tree has untracked scratch files that `git add -A` would pick up: .patch_src.pl, _cap_ff.py, _hi.py, _list_ff_windows2.py, _run_overview.py, _shot_sorry_wave.py, capture_ff_8787.py, ff_zoom_*.mjs, full.png, run_sorry*.py, shot-*.png and shot-*.mjs, wave.png, ui/_empty_winners.py, .impeccable/design.json.",
+    "fix": "Stage paths explicitly (vdj_cuer/, tests/, ui/ code) rather than using `git add -A`."
+   }
+  ],
+  "actions": [
+   "Treat /Users/kirilllanger/src/vdj-station as a superset of 3bc4a77: no hunks need to be ported back from zouk.",
+   "Keep the station's 4 new tests (tests/test_band_drum_melody.py, test_final_loop_seam.py, test_vocal_pickup.py, test_voice_band_vocals.py) in the commit.",
+   "Before committing, run `git -C /Users/kirilllanger/src/vdj-station fetch origin`. That clone's origin/main is stale: GitHub main is 834ba38 (House), not d73e430.",
+   "Plan the commit as a merge with origin/main 834ba38, not a plain commit on d73e430. 834ba38 already holds the House versions of vdj_cuer/core.py, vdj_cuer/file_processor.py and vdj_database_safety.py, so use the scratchpad/merge/*.merged results for those three files. Resolve the other 71 differing files and 28 House-only files (ui/house_*, profile.py, safe_write.py, fs_guard.py, etc.) too.",
+   "Stage files explicitly and exclude the root-level scratch files (shot-*.png, _hi.py, run_sorry*.py, etc.).",
+   "Do not force-push main: that would erase the House version from GitHub main."
+  ]
+ },
+ {
+  "verdict": "safe_with_fixes",
+  "summary": "Keep the HOUSE model: /Users/kirilllanger/src/vdj-station-house/vdj_cuer/ml/artifacts/cue_bar_clf.joblib (sha256 5b612fde..., 19,582,282 B), and copy its JSON with it. Five reasons. (1) The station binary has not changed since the fork. It is byte-identical to house dc2206f (sha256 8731d3fc... for station WT, house dc2206f and merge/.base). Its JSON says saved_at 2026-08-30T19:28:47Z, 669 tracks / 67,763 rows. The Oct 3 20:44 mtime comes from a copy, not a retrain, because saved_at is unchanged. Since ours == base, a 3-way merge resolves to theirs (house). (2) The house model was saved 2026-10-08T23:02:28Z (mtime Oct 8 17:02) on 708 tracks / 73,416 rows. That exactly matches the shared label corpus ~/Music/DJ/Music/Cues/.cache/ml-labels/bars.jsonl (mtime Oct 8 17:00, which I counted at 73,416 rows / 708 tracks / 0 bad lines). So it is the only artifact that includes Kirill's cue corrections from Oct 3-8. Both forks train from that one label file (dataset.py:24-26). Each fork writes the model into its own repo: autocue_path.py:28 picks parents[2] (the repo root) and model.py:24-26 sets DEFAULT_ARTIFACT. Every ingest retrains on all rows (ingest.py:116/134/150/186 -> dataset.py:238-263). That is why the station copy went stale. (3) The training code is the same: diff -rq of vdj_cuer/ml in both repos differs only in artifacts/, and station's vdj_cuer/ml/*.py are unmodified vs HEAD. Both venvs have the same libraries (py 3.12.4, sklearn 1.9.0, numpy 2.5.2, joblib 1.5.3, scipy 1.18.0). The house binary is the station's own training pipeline run on newer data. (4) Both binaries load and predict under the current station code with no sklearn InconsistentVersionWarning (only a NumPy 2.5 shape-deprecation warning, same for both). Both are payload dicts with schema=1 and the same 95 feature_names, equal to MODEL_FEATURE_NAMES (features.py:111). load_cue_bar_model (model.py:521-545) returns CueBarModel for each. cue_clf.n_features_in_=95, feature_names_in_=None (trained on numpy arrays). Heads are the same: cue/loop/rerank/offset/seq/miss HGB + ExtraTrees + tree_fill; mid/outro None. (5) Neither JSON has quality metrics. train_from_labels_file trains on all rows with no holdout and records only n_rows/n_tracks/seed (dataset.py:257-261), so the choice rests on data coverage and recency. The JSON sidecar is never read at runtime: load uses the payload embedded in the joblib (model.py:527-532), and only tests/test_ml_ingest.py:158 reads a sidecar, on a temp artifact. It must still be copied together with the joblib, because it is the only human-readable record of what the binary was trained on. Blocking problem: in the merge scratch, cue_bar_clf.joblib.merged is 0 bytes (sha256 e3b0c442...), while cue_bar_clf.json.merged equals the house JSON. Applying .merged files blindly would ship an empty model with a JSON that describes the house model. joblib.load on an empty file raises. That happens at propose.py:123, outside the import-only try at 116-121. The caller at stems.py:672 is not wrapped, so every AutoCue cue pass would crash.",
+  "issues": [
+   {
+    "severity": "high",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_cuer/ml/artifacts/cue_bar_clf.joblib.merged",
+    "detail": "The merged joblib is 0 bytes (sha256 e3b0c44298fc...); the text merge tool cannot merge a binary. The sibling cue_bar_clf.json.merged is identical to the house JSON (saved_at 2026-10-08, 708 tracks). Copying .merged files into the station would install an empty model next to a JSON that describes a different one. load_cue_bar_model -> joblib.load raises on the empty file at vdj_cuer/ml/propose.py:123, which is outside the import-only try (propose.py:116-121). The caller at vdj_cuer/stems.py:672 has no try either, so every AutoCue cue/all-scope run would fail.",
+    "fix": "Do not use the .merged joblib. Copy the binary straight from /Users/kirilllanger/src/vdj-station-house/vdj_cuer/ml/artifacts/cue_bar_clf.joblib (or scratchpad .../cue_bar_clf.joblib.house; both are sha256 5b612fde63446c08bfb2dc38d202c3da537ba01a855c4e988cf4505916e688df)."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station/vdj_cuer/ml/artifacts/cue_bar_clf.joblib",
+    "detail": "The station binary is stale. It is byte-identical to house dc2206f (sha256 8731d3fc7f07...), saved 2026-08-30T19:28:47Z, 669 tracks / 67,763 rows. It does not include the 39 tracks / 5,653 label rows added Oct 3-8, so a station AutoCue run would ignore Kirill's recent corrections until the station retrains.",
+    "fix": "Replace it with the house joblib (708 tracks / 73,416 rows, saved 2026-10-08T23:02:28Z), which matches the current shared bars.jsonl exactly."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station/vdj_cuer/ml/artifacts/cue_bar_clf.json",
+    "detail": "The sidecar is metadata only. Runtime load reads schema/feature_names from inside the joblib payload (vdj_cuer/ml/model.py:527-532), and only tests/test_ml_ingest.py:158 reads a sidecar. A mismatched pair would not break AutoCue, but the JSON would misreport the training date and size. The current station JSON (Aug 30, 669) describes the station binary; the house JSON (Oct 8, 708) describes the house binary.",
+    "fix": "Copy the house cue_bar_clf.json together with the house joblib. Check that the JSON saved_at equals joblib.load(...)['saved_at'] == '2026-10-08T23:02:28.791642+00:00'."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station/ui/sorter/autocue_path.py",
+    "detail": "Each fork retrains into its own repo artifact (autocue_path.py:28 resolves parents[2] to the fork's own root; model.py:24-26 DEFAULT_ARTIFACT). Both read the shared label file ~/Music/DJ/Music/Cues/.cache/ml-labels/bars.jsonl (dataset.py:24-26). The house UI on 8788 is still running and will keep retraining only the house copy, so any snapshot copied into the station goes stale after the next cue edit in the house. A third fork, vdj-station-house-fest9 on 8799, has its own Oct 5 model (706 tracks), which is older and not a candidate. The corrections themselves live in bars.jsonl, outside both repos, so they are not lost; the station model reflects them after any station-side retrain. The station UI on 8787 would overwrite its artifact on the next ingest with an equivalent model trained on the same labels, code, library versions and seed=0.",
+    "fix": "Copy the artifact as close to the commit as possible. Before copying, re-check that no `vdj_cuer.ml.ingest` process is running (none was at check time) and that the house JSON saved_at has not changed. Long-term (out of scope): point both forks at one shared artifact path, or retrain in the station from bars.jsonl before each commit."
+   },
+   {
+    "severity": "low",
+    "file": "/Users/kirilllanger/src/vdj-station/vdj_cuer/stem_evidence.py",
+    "detail": "Train/serve skew affects both models equally. The station WT changed measure_stem_evidence and its inputs (VOCAL_STEM_TO_INSTRUMENTS 0.40 -> 0.28 at stem_evidence.py:23, new voice-band logic; +365/-9 vs HEAD). The house still uses the 0.40 baseline. vdj_cuer/ml/features.py:260-301 calls measure_stem_evidence/is_clean_phrase_entry to build features at inference, while the stored label rows in bars.jsonl were mostly computed by older code. Feature names are unchanged, so loading is fine, but some values (e.g. vocal_lookback/clean_entry) may shift at inference. This does not favor either binary.",
+    "fix": "No action needed to pick a model. Re-extracting all label rows with the merged code is a separate decision."
+   },
+   {
+    "severity": "info",
+    "file": "/Users/kirilllanger/src/vdj-station/vdj_cuer/ml/artifacts/cue_bar_clf.joblib",
+    "detail": "The artifact is a ~19.6 MB binary tracked in plain git (no .gitattributes/LFS). History: dc5d96a (Aug 14), c0507bf (Aug 29). Committing the house model adds another ~19.6 MB blob.",
+    "fix": "Acceptable as-is; optionally consider LFS later."
+   }
+  ],
+  "actions": [
+   "Do NOT apply scratchpad merge/vdj_cuer/ml/artifacts/cue_bar_clf.joblib.merged (0 bytes). Treat both artifact files as a binary 'take theirs (house)' resolution.",
+   "Pre-check: `pgrep -fl vdj_cuer.ml.ingest` returns nothing, and `shasum -a 256 /Users/kirilllanger/src/vdj-station-house/vdj_cuer/ml/artifacts/cue_bar_clf.joblib` is still 5b612fde63446c08bfb2dc38d202c3da537ba01a855c4e988cf4505916e688df (if it changed, the house retrained again; take the newer pair as long as joblib and JSON saved_at agree).",
+   "cp -p /Users/kirilllanger/src/vdj-station-house/vdj_cuer/ml/artifacts/cue_bar_clf.joblib /Users/kirilllanger/src/vdj-station/vdj_cuer/ml/artifacts/cue_bar_clf.joblib",
+   "cp -p /Users/kirilllanger/src/vdj-station-house/vdj_cuer/ml/artifacts/cue_bar_clf.json /Users/kirilllanger/src/vdj-station/vdj_cuer/ml/artifacts/cue_bar_clf.json (same moment as the joblib; the pair must match)",
+   "Verify (read-only, no bytecode): cd /tmp && PYTHONDONTWRITEBYTECODE=1 /Users/kirilllanger/src/vdj-station/venv/bin/python -B -c \"import sys,json,joblib; sys.path.insert(0,'/Users/kirilllanger/src/vdj-station'); from vdj_cuer.ml.model import load_cue_bar_model; a='/Users/kirilllanger/src/vdj-station/vdj_cuer/ml/artifacts/cue_bar_clf'; p=joblib.load(a+'.joblib'); j=json.load(open(a+'.json')); assert p['saved_at']==j['saved_at'] and p['metrics']==j['metrics']; assert load_cue_bar_model() is not None; print(j['saved_at'], j['metrics'])\" and expect 2026-10-08T23:02:28.791642+00:00 {'n_rows': 73416, 'n_tracks': 708, 'seed': 0}",
+   "In the commit message, record that the model was trained on bars.jsonl as of 2026-10-08 17:00 local (708 tracks / 73,416 rows) by the house fork's identical vdj_cuer/ml code; leave the house fork's artifact untouched."
+  ]
+ },
+ {
+  "verdict": "safe_with_fixes",
+  "summary": "The two files you asked about merge cleanly. Station never changed vdj_cuer/core.py or vdj_cuer/file_processor.py: its working tree, its HEAD and the base all hash the same (core 0c284aab, file_processor cfe97ba5). So a 3-way merge correctly takes House's version, and both core.py.merged (9f27b03c) and file_processor.py.merged (62f9cc1b) are byte-identical to the House working tree. Nothing on the station side is lost in these two files. Both files compile. The three names they import from vdj_database_safety.py.merged exist with matching signatures: is_virtualdj_running() at :80, assert_crlf_bytes(raw, what) at :502 and assert_vdj_song_form(raw, what) at :665. I also checked every vdj_database_safety import in the station tree (173 references) and none is missing from the merged module. cue_bar_clf.json.merged is valid JSON. It is the House sidecar: saved_at 2026-10-08T23:02:28.791642, 73416 rows, 708 tracks. That matches only the House joblib (5b612fde\u2026, 19,582,282 bytes), whose embedded metadata I read from the pickle bytes without loading it. The base/station joblib (8731d3fc\u2026) matches the base JSON instead (2026-08-30, 67763 rows, 669 tracks). Both joblibs carry the same 95 feature names as station's MODEL_FEATURE_NAMES (worked out statically from vdj_cuer/ml/features.py), so either one would load. cue_bar_clf.joblib.merged is a 0-byte placeholder and must not ship.\n\nYour goal was for the fixes to last in the AutoCue logic itself, not just in House. That depends almost entirely on vdj_database_safety.py.merged, not on file_processor.py. process_audio_file has no caller in either repo. The real AutoCue write path is cue_writer._apply_cues_to_database (station cue_writer.py:1217) \u2192 rewrite_song_xml_in_database \u2192 _replace_database_parts_locked. The merged module does put House's CRLF and Song-form gates on that path. But it creates a semantic conflict between the two sides. House's heal_song_form (merged :1532) rewrites the candidate before writing. It moves Comment to right after Infos and indents a column-0 </Song> by one space. Station's new read-back check (merged :1454-1460) then compares the un-healed song_xml against the file on disk. I ran it in memory with the merged module's own format_vdj_poi_line and inject_pois_into_song_xml on a correctly formed CRLF song. With or without a comment, heal changes the bytes, the gates pass, the database is replaced, and then the check raises \"Write read-back mismatch \u2026 treat as NOT saved\". So every AutoCue write would land but be reported as failed: _apply_cues_to_database returns False and autocue_job returns ok=False. Calling canonical_song_block(song_xml) before the splice fixes it. I tested that: heal_song_form then makes no change and the read-back passes, with and without a comment.",
+  "issues": [
+   {
+    "severity": "high",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "Semantic merge conflict on the live AutoCue write path. inject_pois_into_song_xml (:1001 rstrip leaves </Song> at column 0; :1007-1008 appends Comment after the Poi lines) produces a Song block that House's heal_song_form (called in _replace_database_parts_locked at :1532) always rewrites. Station's new read-back check in rewrite_song_xml_in_database (:1454-1460) compares the pre-heal song_xml with the healed file, so it always raises RuntimeError AFTER os.replace and _post_write_gate have already committed the write. I reproduced this in memory with the merged module: heal changed the bytes, the post-heal form had no problems, and `_n2(song_xml) in _n2(back)` was False, both with and without a comment. Result: the cues are written, but station cue_writer.py:1250 returns False, _invalidate_metadata_cache is skipped, and autocue_job.py:279 reports 'AutoCue failed while writing cues.' Station UI callers of rewrite_song_xml_in_database hit the same false failure. Not caught by tests: with MUSIC_SORTER_ALLOW_LF_DB=1, heal_song_form is a no-op (:678), so that env var hides this conflict.",
+    "fix": "In rewrite_song_xml_in_database, right after the CRLF normalization (around :1428-1430), add `song_xml = canonical_song_block(song_xml)` (when newline == '\\r\\n'). I verified that heal_song_form is then a no-op and the read-back check passes. For blocks canonical_song_block leaves alone (multi-line children), make the read-back compare the Song span found in `back` via _find_song_span, not a substring of the pre-heal text. Note _post_write_gate (:1599) already checks byte-for-byte that back == candidate_raw."
+   },
+   {
+    "severity": "high",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_cuer/ml/artifacts/cue_bar_clf.joblib.merged",
+    "detail": "cue_bar_clf.joblib.merged is 0 bytes (sha e3b0c442\u2026). If it is copied into place, joblib.load raises EOFError inside load_cue_bar_model (station vdj_cuer/ml/model.py:527), and propose.py:123 does not catch it. cue_bar_clf.json.merged (d55594d2) matches only the House joblib (embedded saved_at 2026-10-08T23:02:28.791642, n_rows 73416, n_tracks 708). The station/base joblib (8731d3fc) matches the base JSON (2026-08-30T19:28:47.304848, 67763, 669).",
+    "fix": "Ship the joblib and JSON as a pair: House cue_bar_clf.joblib (5b612fde\u2026, 19,582,282 bytes) with json.merged, or station joblib with station json. Never ship the 0-byte placeholder. Both pairs pass the station MODEL_FEATURE_NAMES check (95 names, identical)."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station/tests/test_surgical_database_write.py",
+    "detail": "Station has no tests/conftest.py. House added an untracked one (/Users/kirilllanger/src/vdj-station-house/tests/conftest.py) that sets MUSIC_SORTER_ALLOW_LF_DB=1. It is not in the merge set. Station fixtures such as sample_database() at :21-42 (no XML declaration, no CRLF, <Song> at column 0) fail the merged assert_vdj_song_form (header check at :593), so station tests would go red after the merge. That invites someone to revert the gates. The env var also turns heal off, which hides the high-severity issue above, and unittest-style runs never load conftest.py.",
+    "fix": "Port House tests/conftest.py, ui/tests/test_crlf_hard_gate.py and ui/tests/test_song_row_form.py into station. Add a regression test with the env var cleared: a VDJ-form CRLF song plus cue_writer-style inject_pois_into_song_xml(comment=...) \u2192 rewrite_song_xml_in_database must return without raising and leave a file that passes assert_vdj_song_form."
+   },
+   {
+    "severity": "low",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_cuer/file_processor.py.merged",
+    "detail": "House's hard gate (:349-354) is intact and fails closed, but the ET path it guards can never pass it. ET.tostring(root, encoding='unicode') (:329) emits no XML declaration and no trailing CRLF, and appended Poi/Comment children leave </Song> mis-indented. An in-memory simulation got exactly these song_form_problems: header, file ending, </Song> indent. The CRLF rebuild (:332) passes assert_crlf_bytes. So process_audio_file can no longer write at all. It has no callers in either repo (only its own def at :7), so this is harmless, but this file is not where the CRLF fix actually protects AutoCue.",
+    "fix": "No change needed for the merge. Optionally route this legacy path through serialize_vdj_database plus atomic_replace_database, or delete it later."
+   },
+   {
+    "severity": "info",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_cuer/core.py.merged",
+    "detail": "House's ps-based fallback (:191-205) is intact. It is only reached if `from vdj_database_safety import is_virtualdj_running` (:186) fails. That cannot happen in practice, because vdj_cuer/common.py:29 already imports vdj_database_safety when the package loads. The primary path (merged safety :80-103) is House's ps/comm version (equal to House, not station's pgrep version), so the House detection fix does carry into station. The fallback does not check returncode or VirtualDJ.exe, unlike is_virtualdj_executable (:64); harmless.",
+    "fix": "None required."
+   },
+   {
+    "severity": "info",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "_AUTOCUE_SAFETY_PATH (:698) hard-codes /Users/kirilllanger/src/vdj-automatic-cuer/vdj_database_safety.py as the 'second opinion' used by _post_write_gate. That checkout exists (HEAD d73e430) and its validate_database_replacement accepts stats_fn, so it works. In the canonical station repo, though, the AutoCue write path would depend on a different, stale checkout of itself.",
+    "fix": "Consider pointing autocue_safety_module at sys.modules[__name__] when running inside vdj-station. Up to the safety-module reviewer."
+   }
+  ],
+  "actions": [
+   "Apply core.py.merged and file_processor.py.merged onto the station working tree as-is. Each is identical to House, and station had no changes to either (station == HEAD == base).",
+   "Apply the merge file by file onto the station tree. Do not copy House's vdj_cuer/ over station: that would lose station-only changes in analysis_postprocess.py, audio_cache.py, autocue_job.py, common.py, cue_writer.py, precision_gate.py, stem_evidence.py and stems.py, plus the untracked cue_hygiene.py, cue_spread.py, deleted_markers.py, loop_seam_dsp.py, stem_color.py, stem_naming.py and vocal_gate.py.",
+   "Before applying vdj_database_safety.py.merged, fix rewrite_song_xml_in_database: after the CRLF normalization, add `if newline == \"\\r\\n\": song_xml = canonical_song_block(song_xml)`, and make the read-back at :1454-1460 compare the Song span found in `back` via _find_song_span.",
+   "Replace the 0-byte cue_bar_clf.joblib.merged with House's cue_bar_clf.joblib (sha256 5b612fde63446c08\u2026, 19,582,282 bytes), which pairs with cue_bar_clf.json.merged. If you choose the station joblib instead, use the station JSON (7fbe468b\u2026).",
+   "Copy /Users/kirilllanger/src/vdj-station-house/tests/conftest.py, ui/tests/test_crlf_hard_gate.py and ui/tests/test_song_row_form.py into station. Add a regression test with MUSIC_SORTER_ALLOW_LF_DB cleared that runs inject_pois_into_song_xml(comment=...) and rewrite_song_xml_in_database on a VDJ-form CRLF database and asserts no exception and that assert_vdj_song_form passes."
+  ]
+ },
+ {
+  "include": [
+   {
+    "path": "vdj_cuer/analysis_postprocess.py",
+    "reason": "AutoCue logic (M). Imports new vdj_cuer/stem_color.py at :19."
+   },
+   {
+    "path": "vdj_cuer/audio_cache.py",
+    "reason": "AutoCue logic (M, edited 10-08). Uses the new voice/band/energy StemProfile decode flags from stem_evidence."
+   },
+   {
+    "path": "vdj_cuer/autocue_job.py",
+    "reason": "AutoCue logic (M). Imports new cue_spread at :211."
+   },
+   {
+    "path": "vdj_cuer/common.py",
+    "reason": "AutoCue logic (M). Loop rules: LOOP_BEAT_CHOICES=(64,32,16), MIN_USEFUL_LOOP_BEATS=16, MAX_LOOP_DURATION_SECONDS=34. No secrets: load_gemini_api_key reads env and .env files only."
+   },
+   {
+    "path": "vdj_cuer/cue_writer.py",
+    "reason": "AutoCue logic (M, +480, edited 10-08). Imports cue_hygiene (:11), vocal_gate (:245), stem_color (:413/530/739/882), loop_seam_dsp (:429), stem_naming (:936/958) and deleted_markers (:972). It needs all of those new modules."
+   },
+   {
+    "path": "vdj_cuer/precision_gate.py",
+    "reason": "AutoCue logic (M). ALLOWED_LOOP_BEATS={16,32,64}."
+   },
+   {
+    "path": "vdj_cuer/stem_evidence.py",
+    "reason": "AutoCue logic (M, +374, edited 10-08)."
+   },
+   {
+    "path": "vdj_cuer/stems.py",
+    "reason": "AutoCue logic (M). Imports stem_color (:15), cue_hygiene (:16), loop_seam_dsp (:339/376) and vocal_gate (:634)."
+   },
+   {
+    "path": "vdj_database_safety.py",
+    "reason": "AutoCue DB safety (M). Commit the merged version (scratchpad/merge/vdj_database_safety.py.merged), not this station copy, so the house CRLF/Song-form gates survive. Fix merged line 698 first (see summary): it hardcodes /Users/kirilllanger/src/vdj-automatic-cuer/... ."
+   },
+   {
+    "path": "vdj_cuer/cue_hygiene.py",
+    "reason": "New AutoCue module (??). Imported by cue_writer.py:11/690, stems.py:16 and tests test_cue_hygiene, test_vocal_pickup and test_final_loop_seam."
+   },
+   {
+    "path": "vdj_cuer/cue_spread.py",
+    "reason": "New AutoCue module (??). Imported by autocue_job.py:211 and tests/test_cue_spread.py."
+   },
+   {
+    "path": "vdj_cuer/deleted_markers.py",
+    "reason": "New AutoCue module (??). Imported by cue_writer.py:972 and tests/test_deleted_markers.py. Reads ~/Music/DJ/Notes through Path.home(), so no hardcoded personal path."
+   },
+   {
+    "path": "vdj_cuer/loop_seam_dsp.py",
+    "reason": "New AutoCue module (??). Imported by cue_writer.py:429, stems.py:339/376 and tests/test_loop_seam_gate.py. Writes debug clips to ~/vdj_seam_clips (:28, :176-178), which is expanduser-based."
+   },
+   {
+    "path": "vdj_cuer/stem_color.py",
+    "reason": "New AutoCue module (??, edited 10-08). Imported by cue_writer, stems, analysis_postprocess and three tests."
+   },
+   {
+    "path": "vdj_cuer/stem_naming.py",
+    "reason": "New AutoCue module (??). Imported by cue_writer.py:936/958 and tests test_stem_naming, test_cue_hygiene and test_vocal_relative_rule."
+   },
+   {
+    "path": "vdj_cuer/stem_vocal_holes.py",
+    "reason": "New module (??, 08-30). It is not imported by AutoCue itself but is required by ui/sorter/stem_audit.py:19, which ui/app.py:149 imports, so it must ship with or before the UI. Its print() calls are CLI output only."
+   },
+   {
+    "path": "vdj_cuer/vocal_gate.py",
+    "reason": "New AutoCue module (??). Imported by cue_writer.py:245, stems.py:634 and tests/test_vocal_relative_rule.py."
+   },
+   {
+    "path": "tests/test_analysis_postprocessing.py",
+    "reason": "AutoCue test (M). gemini_api_key=\"test-key\" at :12 is a dummy value."
+   },
+   {
+    "path": "tests/test_autocue_job.py",
+    "reason": "AutoCue test (M)."
+   },
+   {
+    "path": "tests/test_directory_sort_label.py",
+    "reason": "Test for vdj_database_safety (M). Uses /Users/x/... dummy paths."
+   },
+   {
+    "path": "tests/test_loop_seam_gemini.py",
+    "reason": "AutoCue test (M)."
+   },
+   {
+    "path": "tests/test_loop_target.py",
+    "reason": "AutoCue test (M)."
+   },
+   {
+    "path": "tests/test_precision_gate.py",
+    "reason": "AutoCue test (M)."
+   },
+   {
+    "path": "tests/test_stem_evidence.py",
+    "reason": "AutoCue test (M). The personal path at :493 is already in HEAD, so nothing new is added."
+   },
+   {
+    "path": "tests/test_write_scope.py",
+    "reason": "AutoCue test (M). \"test-key\" at :51 is a dummy value."
+   },
+   {
+    "path": "tests/test_band_drum_melody.py",
+    "reason": "New test (??) for stem_color and stem_evidence. Passes in the sandbox."
+   },
+   {
+    "path": "tests/test_cue_hygiene.py",
+    "reason": "New test (??) for cue_hygiene, stem_naming and cue_writer. Passes."
+   },
+   {
+    "path": "tests/test_cue_spread.py",
+    "reason": "New test (??) for cue_spread. Passes."
+   },
+   {
+    "path": "tests/test_deleted_markers.py",
+    "reason": "New test (??) for deleted_markers. Passes."
+   },
+   {
+    "path": "tests/test_final_loop_seam.py",
+    "reason": "New test (??) for cue_hygiene.final_loop_seam_ok. Passes."
+   },
+   {
+    "path": "tests/test_loop_seam_gate.py",
+    "reason": "New test (??) for loop_seam_dsp. Passes, but save_name= at :37 and :46 writes WAVs into the real ~/vdj_seam_clips; unit_* files from earlier runs are already there. Worth patching SEAM_CLIP_DIR in a follow-up, not a blocker."
+   },
+   {
+    "path": "tests/test_stem_color.py",
+    "reason": "New test (??) for stem_color. Passes."
+   },
+   {
+    "path": "tests/test_stem_naming.py",
+    "reason": "New test (??) for stem_naming. Passes."
+   },
+   {
+    "path": "tests/test_stem_onset.py",
+    "reason": "New test (??) for stem_color.classify_onset. Passes."
+   },
+   {
+    "path": "tests/test_stem_vocal_holes.py",
+    "reason": "New test (??) for stem_vocal_holes. Passes."
+   },
+   {
+    "path": "tests/test_vocal_pickup.py",
+    "reason": "New test (??) for cue_hygiene and stem_evidence. Passes."
+   },
+   {
+    "path": "tests/test_vocal_relative_rule.py",
+    "reason": "New test (??) for vocal_gate, stem_naming and stem_evidence. Passes."
+   },
+   {
+    "path": "tests/test_voice_band_vocals.py",
+    "reason": "New test (??) for stem_evidence voice band. Passes."
+   },
+   {
+    "path": "ui/app.py",
+    "reason": "Station UI (M). Imports the new sorter.stem_audit (:149) and sorter.live_set_played (:158), so those two must be committed with it. No house-profile code."
+   },
+   {
+    "path": "ui/sorter/autocue_retry.py",
+    "reason": "Station UI and AutoCue runner (M)."
+   },
+   {
+    "path": "ui/sorter/pajamathon_set_sync.py",
+    "reason": "Station UI (M)."
+   },
+   {
+    "path": "ui/sorter/playlist_assemble.py",
+    "reason": "Station UI (M, 1 line). Reads GEMINI_API_KEY from env only (:932)."
+   },
+   {
+    "path": "ui/sorter/relocate.py",
+    "reason": "Station UI (M, +248): clone_source_song_onto_dest and related helpers."
+   },
+   {
+    "path": "ui/sorter/transition_recs.py",
+    "reason": "Station UI (M)."
+   },
+   {
+    "path": "ui/sorter/vdj_now_playing.py",
+    "reason": "Station UI (M)."
+   },
+   {
+    "path": "ui/static/app.js",
+    "reason": "Station UI (M, +578). No console.log or debugger added."
+   },
+   {
+    "path": "ui/static/index.html",
+    "reason": "Station UI (M). Loads the new /static/stems.js at :1022."
+   },
+   {
+    "path": "ui/static/practice.js",
+    "reason": "Station UI (M)."
+   },
+   {
+    "path": "ui/static/state.js",
+    "reason": "Station UI (M)."
+   },
+   {
+    "path": "ui/static/styles.css",
+    "reason": "Station UI (M, +530)."
+   },
+   {
+    "path": "ui/sorter/live_set_played.py",
+    "reason": "New UI module (??) imported by ui/app.py:158. The app fails to import without it."
+   },
+   {
+    "path": "ui/sorter/stem_audit.py",
+    "reason": "New UI module (??) imported by ui/app.py:149. Depends on vdj_cuer/stem_vocal_holes.py."
+   },
+   {
+    "path": "ui/static/stems.js",
+    "reason": "New UI asset (??) referenced by index.html:1022 and ui/tests/js_assets.py:17."
+   },
+   {
+    "path": "ui/tests/js_assets.py",
+    "reason": "UI test helper (M). Adds stems.js."
+   },
+   {
+    "path": "ui/tests/test_autocue_retry.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_module_split.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_pajamathon_set_sync.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_playlist_assemble.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_practice_best.py",
+    "reason": "UI test (M). Adds one more /Users/kirilllanger/Music/Mixes fixture string at :43. HEAD already has four, so this is cosmetic only (it is a string, never opened)."
+   },
+   {
+    "path": "ui/tests/test_relocate.py",
+    "reason": "UI test (M). Passes, except test_demote_ready_to_add_cues (:607) fails whenever VirtualDJ is open: it patches only sorter.relocate.is_virtualdj_running (:626), while vdj_database_safety.py:95-99 does its own check. That is an environmental flake."
+   },
+   {
+    "path": "ui/tests/test_ui_clarity_assets.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_ux_review_helpers.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_vdj_now_playing.py",
+    "reason": "UI test (M)."
+   },
+   {
+    "path": "ui/tests/test_live_set_played.py",
+    "reason": "New UI test (??) for live_set_played. Track names appear only as fixtures, as in existing tests."
+   },
+   {
+    "path": "ui/tests/test_stem_audit.py",
+    "reason": "New UI test (??) for stem_audit and stem_vocal_holes."
+   },
+   {
+    "path": "ui/tests/test_stem_audit_assets.py",
+    "reason": "New UI test (??) for stems.js wiring. /Users/k/... at :104 is a dummy path."
+   }
+  ],
+  "exclude": [
+   {
+    "path": ".impeccable/design.json",
+    "reason": "Design scratch generated 08-27 by the impeccable tool (palette and component snippets), not runtime code. Note that .impeccable/surfaces/sorter.md is already tracked, if Kirill wants design artifacts versioned."
+   },
+   {
+    "path": ".patch_src.pl",
+    "reason": "One-off Perl patcher with hardcoded root /Users/kirilllanger/src/vdj-automatic-cuer (:3). Already applied."
+   },
+   {
+    "path": "_cap_ff.py",
+    "reason": "One-off Quartz screenshot script for the Firefox 'Music Sorter' window. Not imported."
+   },
+   {
+    "path": "_hi.py",
+    "reason": "Scratch: print(\"hi-from-file\")."
+   },
+   {
+    "path": "_list_ff_windows2.py",
+    "reason": "One-off Quartz window lister. Not imported."
+   },
+   {
+    "path": "_run_overview.py",
+    "reason": "One-off launcher that runs node on /Users/kirilllanger/Desktop/Development/playwright-shot/... (personal path)."
+   },
+   {
+    "path": "_shot_sorry_wave.py",
+    "reason": "One-off Playwright screenshot script. Shebang and OUT use /Users/kirilllanger/src/vdj-automatic-cuer, and TARGET_PATH (:11) is a personal music file path."
+   },
+   {
+    "path": "capture_ff_8787.py",
+    "reason": "One-off Quartz Firefox capture script. Not imported."
+   },
+   {
+    "path": "ff_zoom_quartz.mjs",
+    "reason": "One-off Playwright script importing from /Users/kirilllanger/Desktop/Development/playwright-shot/... (personal path)."
+   },
+   {
+    "path": "ff_zoom_shots.mjs",
+    "reason": "One-off Playwright script. Personal paths at :1, :5 and :15."
+   },
+   {
+    "path": "full.png",
+    "reason": "Screenshot, 405 KB."
+   },
+   {
+    "path": "run_sorry.py",
+    "reason": "One-off node launcher with a personal path."
+   },
+   {
+    "path": "run_sorry2.py",
+    "reason": "One-off node launcher with a personal path."
+   },
+   {
+    "path": "shot-chorus-96031-quartz.png",
+    "reason": "Screenshot, 952 KB."
+   },
+   {
+    "path": "shot-chorus-96031.png",
+    "reason": "Screenshot, 952 KB."
+   },
+   {
+    "path": "shot-current-8787.png",
+    "reason": "Screenshot, 1.96 MB."
+   },
+   {
+    "path": "shot-groove-10697-quartz.png",
+    "reason": "Screenshot, 961 KB."
+   },
+   {
+    "path": "shot-groove-10697.png",
+    "reason": "Screenshot, 961 KB."
+   },
+   {
+    "path": "shot-nharei.mjs",
+    "reason": "One-off Playwright script. Personal paths, including a music file at :8."
+   },
+   {
+    "path": "shot-probe-now.png",
+    "reason": "Screenshot, 3.4 MB."
+   },
+   {
+    "path": "shot-sorry-ff-win.png",
+    "reason": "Screenshot, 1.9 MB."
+   },
+   {
+    "path": "shot-sorry-wave.png",
+    "reason": "Screenshot, 1.25 MB."
+   },
+   {
+    "path": "shot-sorry.mjs",
+    "reason": "One-off Playwright script with personal paths."
+   },
+   {
+    "path": "shot-vb-85364-quartz.png",
+    "reason": "Screenshot, 929 KB."
+   },
+   {
+    "path": "shot-vb-85364.png",
+    "reason": "Screenshot, 929 KB."
+   },
+   {
+    "path": "wave.png",
+    "reason": "Screenshot, 49 KB."
+   },
+   {
+    "path": "ui/_empty_winners.py",
+    "reason": "One-off maintenance script that writes the real VirtualDJ database at import time (backup_database plus copy_cues_to_placement). Uses the private _find_song_span. Nothing references it, and it is dangerous to ship as a module."
+   },
+   {
+    "path": "ui/start_8787_noreload.sh",
+    "reason": "Duplicates ui/run.sh, which already sets the same thread and concurrency env vars and runs uvicorn without --reload. Hardcodes /Users/kirilllanger/src/vdj-station at :2 and :12."
+   }
+  ],
+  "unsure": [
+   {
+    "path": "vdj_cuer/ml/artifacts/cue_bar_clf.joblib",
+    "reason": "Runtime model (vdj_cuer/ml/model.py:25), tracked and committed twice before. Each commit adds about 19 MB to the public repo's history. The station working copy is the 08-30 retrain (669 tracks); house has a 10-08 retrain on 708 tracks / 73,416 rows (19.58 MB). The feature lists are identical. DO NOT use scratchpad/merge/.../cue_bar_clf.joblib.merged: it is 0 bytes (sha1 da39a3ee). Recommend copying the house file and keeping it paired with its .json, but whether to adopt the house retrain is Kirill's call."
+   },
+   {
+    "path": "vdj_cuer/ml/artifacts/cue_bar_clf.json",
+    "reason": "Metadata for the joblib; must match whichever joblib is committed. The station copy says saved_at 2026-08-30, n_tracks 669. House and merged say 2026-10-08T23:02, n_tracks 708, n_rows 73416. Only saved_at and metrics differ."
+   }
+  ],
+  "summary": "96 paths are modified or untracked in the station repo (none under venv/ or __pycache__): 66 include, 28 exclude, 2 unsure. I staged nothing and did not touch either repo. I ran the tests only on copies under scratchpad/inv_sandbox/, with HOME, NUMBA_CACHE_DIR and TMPDIR pointed into the scratchpad, -p no:cacheprovider and PYTHONDONTWRITEBYTECODE=1.\n\n**Every new .py is either imported or scratch:**\n- All 8 new vdj_cuer modules are imported by app code. cue_hygiene, cue_spread, deleted_markers, loop_seam_dsp, stem_color, stem_naming and vocal_gate are used by cue_writer, stems, autocue_job or analysis_postprocess. stem_vocal_holes is used only by ui/sorter/stem_audit.py:19.\n- ui/app.py:149 and :158 import the new ui/sorter/stem_audit.py and ui/sorter/live_set_played.py, and index.html:1022 loads the new ui/static/stems.js. Committing the modified ui/app.py without these breaks the app.\n- None of the excluded scripts are referenced anywhere. ui/_empty_winners.py is a one-off that writes the real database.xml when imported.\n\n**Secrets and personal data:**\n- No real API keys or tokens. The only key-like values are \"test-key\" fixtures (tests/test_analysis_postprocessing.py:12, tests/test_write_scope.py:51).\n- .env and .claude/settings.local.json are gitignored, so they will not go up.\n- The GitHub repo is PUBLIC. Personal absolute paths appear only in excluded scratch files, in ui/start_8787_noreload.sh:2,12, and as test fixture strings. ui/tests/test_practice_best.py:43 adds one; tests/test_stem_evidence.py:493 already has one at HEAD.\n\n**Test results:**\n\n| Tree | Root tests | UI tests |\n|---|---|---|\n| HEAD | 4 fail, 348 pass | 5 fail |\n| Station working tree | Same 4 fail, 456 pass (all 13 new tests pass) | 551 pass, 3 fail |\n\n- The 4 root failures are already broken at HEAD: test_analysis_cache, test_ml_hybrid and two in test_ml_labels.\n- Of the 3 UI failures, 2 already fail at HEAD: test_placements_regression and test_recommend_models.\n- The third, test_relocate::test_demote_ready_to_add_cues, fails only while VirtualDJ is open and passed on rerun with it closed.\n\n**Problems found while checking the house merge (they matter for making the fixes last):**\n1. vdj_cuer/core.py and vdj_cuer/file_processor.py show as unmodified in station, so they are not in this inventory. The house edits to them (merged equals house: ps-based VirtualDJ detection, pure CRLF output, assert_crlf_bytes and assert_vdj_song_form gates) still have to be copied into station before committing. They depend on the merged vdj_database_safety.py.\n2. The merged vdj_database_safety.py:698 hardcodes `_AUTOCUE_SAFETY_PATH = Path(\"/Users/kirilllanger/src/vdj-automatic-cuer/vdj_database_safety.py\")`. ~/src/vdj-automatic-cuer is a symlink to vdj-station, so in station this module just loads itself a second time. It is also a personal path in a public repo. Change it to use only the MUSIC_SORTER_AUTOCUE_SAFETY_PATH env override, falling back to the module itself.\n3. Running the tests with the merged files applied (core.py, file_processor.py, vdj_database_safety.py, house ML artifacts) gives 18 root and 53 UI failures. They come from the new CRLF/Song-form gate rejecting the tests' LF-only fixtures. Fixes needed:\n   - Port house's tests/conftest.py, which sets MUSIC_SORTER_ALLOW_LF_DB=1, and add a station ui/tests/conftest.py with that same line. House's own ui/tests/conftest.py (line 26) also carries house-profile setup, so don't copy it whole.\n   - With that flag set, the only new failure is ui/tests/test_delete_add_cues.py::test_delete_pajamathon_set_keeps_library_hardlink. Its fixture puts a raw \"&\" into FilePath (:186, :195, :198), which the new post-write XML parse rejects. House already fixed this with xml.sax.saxutils.escape; port that test diff.\n   - Optional extras that also use the new gates: house's vdj_cue_patch.py and ui/tests/test_crlf_hard_gate.py.\n4. Do not use the merged joblib: it is 0 bytes. Use house's joblib and json together (listed as unsure).\n\n**Docs:** no docs are in the change set. README.md:296-336 still describes the old pipeline: loops below 0.75 confidence, while precision_gate's MIN_LOOP_CONFIDENCE is 0.62; and no mention of 16/32/64-beat loops, the DSP seam gate, cue hygiene, deleted markers or the vocal gate. Worth adding a README update to the commit.\n\n**Suggested commit split:**\n- AutoCue engine: vdj_cuer/*, the merged and fixed vdj_database_safety.py, house core.py and file_processor.py, the ML pair, tests/* and tests/conftest.py.\n- Station UI: ui/*.\n\nAdd the excluded scratch patterns (root shot-*.png, *.mjs, the _*.py scripts) to .git/info/exclude so `git add -A` can't pick them up."
+ },
+ {
+  "verdict": "safe_with_fixes",
+  "summary": "The switch is small, but it is only safe in a fixed order. First, land the House AutoCue fixes in ~/src/vdj-station. Then point the House path helper and start scripts at an explicit VDJ_AUTOCUE_ROOT (default ~/src/vdj-station). Last, with 8788 stopped, move the vendored copies to a dated folder. Never delete them.\n\nHow the House resolves AutoCue today:\n- ui/sorter/autocue_path.py:24-41 tries here.parents[2] (the fork root) first and inserts it at sys.path[0]. I tested this read-only, under fs_guard with readonly on. Even with the station modules already imported, ensure_autocue_on_path() returned /Users/kirilllanger/src/vdj-station-house, sys.path became [fork, station, ui], and song_lane_color loaded from the fork.\n- Every AutoCue run is `sys.executable -m vdj_cuer.autocue_job` (ui/sorter/autocue_retry.py:945-948) with cwd=ensure_autocue_on_path() (:1073) and PYTHONPATH=that root (:969-981). Under `-m`, the cwd wins, so the child runs whatever root that function returns.\n- The same pattern is used for ML ingest: ml_training.py:27, :34-44 and :53.\n- Grid deep-verify ignores the helper. grid_preflight.py:331 hardcodes parents[2] and passes --repo-root, and grid_verify_worker.py:21-23 does sys.path.insert(0, repo) and chdir(repo).\n- start_8788.sh:11 and start_8788_write.sh:11 export PYTHONPATH=$FORK_ROOT. Three modules import vdj_cuer.gemini_call at import time before any ensure call: recommend.py:27, practice_analyze.py:30 and playlist_assemble.py:40.\n- No other place resolves the code root. llm.py:81, recommend.py:111, practice_analyze.py:54 and playlist_assemble.py:929 use parents[2] only to load the fork's .env, so keep them.\n- autocue_retry.py, ml_training.py and app.py need no edits once the helper changes.\n- Running state: 8788 is pid 39186, started 2026-10-08 17:20:34 in WRITE mode (MUSIC_SORTER_READONLY=0, PYTHONPATH=fork, no --reload). Its log shows vdj_database_safety and vdj_cuer loaded from the fork.\n\nWhat breaks if you switch before the merge (House UI against the current station code, AST check plus probe import):\n- All 19 AutoCue-touching sorter modules import cleanly against the station.\n- At runtime, safe_write.py:128/131/136/139/143/145 calls V.legacy_fixture_mode() and V.canonical_song_block(). Neither exists in the station, so every save through _crlf/_row/_same_song raises AttributeError.\n- Station vdj_database_safety also lacks:\n  - ReadOnlyModeError, readonly_mode and _refuse_if_readonly. The House-side refusal is gone from assert_safe_to_write_vdj_database, the lock, copy, snapshot and recovery.\n  - assert_crlf_bytes, assert_vdj_song_form, song_form_problems, heal_song_form, to_crlf, LineEndingError, is_virtualdj_executable, autocue_safety_module and the _post_write_gate rollback.\n  - The House's ps-comm VirtualDJ detection. Station's is_virtualdj_running (vdj_database_safety.py:41-63) uses `pgrep -f /VirtualDJ.app/...`, which also matches any process whose arguments mention that path.\n- House tests that need these: test_house_profile.py:164-182, test_crlf_hard_gate.py:100-140, test_song_row_form.py, test_house_folder_colors.py:123-139, and test_vdj_running_detection.py:59-67 (which also needs the House vdj_cue_patch.py).\n\nCompatible differences that will not break the House UI:\n- rewrite_song_xml_in_database gained an optional base_song_xml argument. The House UI never calls it.\n- StemMixin gained _evaluate_loop_seam_once and _loop_type_display_name, and _evaluate_loop_seam_with_gemini gained beat_seconds and profiles. grid_batch.py:344 only uses _probe_vdj_stem_streams, which is unchanged.\n- The autocue_job CLI flags and result JSON are unchanged (autocue_retry.py:934-966, :1098-1114).\n- vdj_cuer.common constants changed: LOOP_BEAT_CHOICES (32,16,8,4)\u2192(64,32,16), MIN_USEFUL_LOOP_BEATS 4\u219216, MAX_LOOP_DURATION_SECONDS 14\u219234. The UI does not import them, but AutoCue output changes: no loops under 16 beats, and cues closer than 32 beats are dropped.\n- vdj_cuer/deleted_markers.py:25-48 defaults to ~/Music/DJ/Notes/House-8788/deleted_markers.json, which is the House store.\n\nThe merged safety module is a strict superset of the House API. Its only signature change is the additive base_song_xml.\n\nWhen the switch takes effect:\n- Editing the .py files does nothing to the running 8788. It keeps its already-imported fork modules until restarted.\n- Moving the vendored copies aside while 8788 runs leaves it half-switched:\n  - The old helper re-checks its candidate list on every call, so new AutoCue and ingest children would immediately run station code.\n  - grid_verify_worker would fail to import vdj_cuer, so deep verify reports not verified.\n  - Lazy `vdj_cuer.*` submodule imports in the UI process resolve through the already-imported package's __path__ (the moved fork folder) and raise ModuleNotFoundError: app.py:654/806, grid_batch.py:311-344, autocue_retry.py:134.\n  - So stop 8788 first.\n- After a restart with the new script, all in-process users load station code. These run in-process and pick up later station edits only on restart: safe_write, cue_edit, grid_batch scoring, stem_audit, llm/gemini_call.\n- Every AutoCue job, ML ingest and grid-verify child imports fresh from disk when it is spawned. Later station edits reach those without a restart.\n- 8787 (pid 94687, running since 2026-10-03 19:05) works the same way: once the merge lands, its AutoCue children use the merged code but its in-process modules stay old until restart.",
+  "issues": [
+   {
+    "severity": "critical",
+    "file": "/Users/kirilllanger/src/vdj-station-house/ui/sorter/autocue_path.py",
+    "detail": "Lines 24-41: the candidate list starts with here.parents[2] (the fork root) and inserts the first hit at sys.path[0]. While the fork has vdj_database_safety.py this always returns the fork. Tested read-only: with the station modules pre-imported, it still returned /Users/kirilllanger/src/vdj-station-house and put it ahead of the station. AutoCue children then run with cwd=fork (autocue_retry.py:1073) and execute the vendored vdj_cuer. ML ingest does the same (ml_training.py:53).",
+    "fix": "Replace the whole file (keep the function name, because 18 call sites and test_autocue_retry.py:415/495 patch it):\n\nimport os, pwd, sys\nfrom pathlib import Path\nAUTOCUE_ROOT_ENV = \"VDJ_AUTOCUE_ROOT\"\n_AUTOCUE_MODULES = (\"vdj_database_safety\", \"vdj_cuer\", \"compute_thread_limits\")\n\ndef _real_home() -> Path:  # not Path.home(): pw_bleed overrides HOME\n    try:\n        return Path(pwd.getpwuid(os.getuid()).pw_dir)\n    except (KeyError, OSError):\n        return Path.home()\n\ndef autocue_root() -> Path:\n    raw = os.environ.get(AUTOCUE_ROOT_ENV, \"\").strip()\n    root = (Path(raw).expanduser() if raw else _real_home() / \"src\" / \"vdj-station\").resolve()\n    if not (root / \"vdj_database_safety.py\").is_file() or not (root / \"vdj_cuer\" / \"__init__.py\").is_file():\n        raise RuntimeError(f\"AutoCue root {root} has no vdj_database_safety.py + vdj_cuer/; set {AUTOCUE_ROOT_ENV}\")\n    return root\n\ndef _assert_not_shadowed(root: Path) -> None:\n    for name in _AUTOCUE_MODULES:\n        origin = getattr(sys.modules.get(name), \"__file__\", None)\n        if origin and not Path(origin).resolve().is_relative_to(root):\n            raise RuntimeError(f\"{name} imported from {origin}, not AutoCue root {root}; restart via start_8788*.sh\")\n\ndef ensure_autocue_on_path() -> Path:\n    root = autocue_root()\n    entry = str(root)\n    if sys.path[:1] != [entry]:\n        while entry in sys.path:\n            sys.path.remove(entry)\n        sys.path.insert(0, entry)\n    _assert_not_shadowed(root)\n    return root\n\nNo silent fallback to the fork. A wrong or mixed root fails loudly at UI start."
+   },
+   {
+    "severity": "critical",
+    "file": "/Users/kirilllanger/src/vdj-station/vdj_database_safety.py",
+    "detail": "Precondition: the station does not have the House fixes yet. The station files equal the merge's .station versions, not .merged. Switching first would:\n- Raise AttributeError in ui/sorter/safe_write.py:128-145 (legacy_fixture_mode, canonical_song_block) on every save path.\n- Drop the readonly refusal (House vdj_database_safety.py:32-51, 113, 254, 341, 754, 1634).\n- Drop the CRLF, song-form, heal and post-write-rollback gates (House :486-693, :1580-1607).\n- Bring back the pgrep -f VirtualDJ detection, which also matches processes whose arguments mention VirtualDJ (station :41-63, station vdj_cuer/core.py:183-200).\nHouse vdj_cuer/file_processor.py also imports assert_crlf_bytes and assert_vdj_song_form from vdj_database_safety, so the safety module, core.py and file_processor.py must land together.",
+    "fix": "Copy scratchpad/merge/vdj_database_safety.py.merged, vdj_cuer/core.py.merged and vdj_cuer/file_processor.py.merged into ~/src/vdj-station in one step (0 conflict markers). The merged module is a superset of the House API; the only delta is the additive base_song_xml. The new start-script check below refuses to start the House if these gates are missing."
+   },
+   {
+    "severity": "high",
+    "file": "/Users/kirilllanger/src/vdj-station-house/ui/sorter/grid_preflight.py",
+    "detail": "Line 331 sets repo_root = Path(__file__).resolve().parents[2] (the fork). It goes into PYTHONPATH (:333-335) and --repo-root (:346-347), and grid_verify_worker.py:21-23 inserts it at sys.path[0] and chdirs there. So deep grid verify keeps importing the vendored vdj_cuer. After the vendored copies move, it fails instead, and preflight reports the grid as not verified.",
+    "fix": "Old: `    repo_root = Path(__file__).resolve().parents[2]`\nNew: `    repo_root = ensure_autocue_on_path()  # AutoCue code root (VDJ_AUTOCUE_ROOT), not this fork`\nThe helper is already imported at grid_preflight.py:21. grid_verify_worker.py needs no change."
+   },
+   {
+    "severity": "high",
+    "file": "/Users/kirilllanger/src/vdj-station-house/ui/start_8788.sh",
+    "detail": "Line 11 exports PYTHONPATH=$FORK_ROOT, and lines 2-4 say it imports the fork's AutoCue on purpose. Modules imported before any ensure call bind to whatever PYTHONPATH finds first: recommend.py:27, practice_analyze.py:30, playlist_assemble.py:40. Lines 26-29 only print the path. start_8788_write.sh has the same lines and is what pid 39186 runs.",
+    "fix": "Apply to both start_8788.sh and start_8788_write.sh.\n\n1. Line 11. Old: `export PYTHONPATH=\"$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}\"`\nNew:\nexport VDJ_AUTOCUE_ROOT=\"${VDJ_AUTOCUE_ROOT:-$HOME/src/vdj-station}\"\nexport PYTHONPATH=\"$VDJ_AUTOCUE_ROOT${PYTHONPATH:+:$PYTHONPATH}\"\nexport AUTOCUE_DELETED_MARKERS_PATH=\"$MUSIC_SORTER_NOTES_DIR/deleted_markers.json\"\n\n2. Lines 2-4: update the comment to say AutoCue comes from VDJ_AUTOCUE_ROOT. Add autocue=$VDJ_AUTOCUE_ROOT to the echo on line 25.\n\n3. Replace the heredoc on lines 26-29 with:\n\"$FORK_ROOT/venv/bin/python\" - <<'PY' || { echo \"[start_8788] AutoCue root check FAILED\" >&2; exit 1; }\nimport os, sys\nfrom pathlib import Path\nroot = Path(os.environ[\"VDJ_AUTOCUE_ROOT\"]).resolve()\nimport vdj_database_safety as V, vdj_cuer\nfor m in (V, vdj_cuer):\n    f = Path(m.__file__).resolve(); print(\"[start_8788]\", m.__name__, \"=\", f)\n    if not f.is_relative_to(root): sys.exit(f\"{m.__name__} not from {root}\")\nfor n in (\"readonly_mode\", \"assert_crlf_bytes\", \"assert_vdj_song_form\", \"canonical_song_block\", \"legacy_fixture_mode\"):\n    if not hasattr(V, n): sys.exit(f\"{root} lacks House safety gate {n}; merge House fixes first\")\nPY\n\nKeep the FORK_ROOT .env sourcing (line 14) and the model pin."
+   },
+   {
+    "severity": "high",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_cuer/ml/artifacts/cue_bar_clf.joblib.merged",
+    "detail": "The merge set is broken or incomplete:\n- cue_bar_clf.joblib.merged is 0 bytes (sha1 da39a3ee, the hash of an empty file).\n- House changed vdj_cue_patch.py (CRLF/song-form gate plus the shared ps-comm VirtualDJ detector), but it is not in the merge set. Station vdj_cue_patch.py equals the baseline, so the House copy applies cleanly.\n- House tests/conftest.py (untracked; sets MUSIC_SORTER_ALLOW_LF_DB=1) is needed once station gets the CRLF gate. Station has no tests/conftest.py or ui/tests/conftest.py, so its LF-fixture tests would hit the gate.",
+    "fix": "Never copy the .merged joblib. Copy cue_bar_clf.joblib and cue_bar_clf.json as a pair from one side: House (2026-10-08 17:02, 19,582,282 B, newer) or station (2026-10-03, 19,056,506 B). Copy House vdj_cue_patch.py and tests/conftest.py into the station. Station ui tests that use LF fixtures need the same env flag."
+   },
+   {
+    "severity": "medium",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "Semantic clash in the merged file. rewrite_song_xml_in_database runs the station's read-back check (`if _n2(song_xml) not in _n2(back)`, line 1457, raising 'Write read-back mismatch\u2026 treat as NOT saved' at 1459) after the House _replace_database_parts_locked has passed the block through heal_song_form (line 1532). heal can re-indent <Song>/</Song> or move a late <Comment>. In that case the write has already committed and the check still reports failure. AutoCue calls this path at station vdj_cuer/cue_writer.py:1217.",
+    "fix": "In the merged rewrite_song_xml_in_database, before splicing, normalize the block the same way heal would: `if not legacy_fixture_mode(): song_xml = canonical_song_block(song_xml)`. Alternatively, compare canonical_song_block() of both sides in the read-back. Then run station tests/test_surgical_database_write.py and tests/test_crlf_preservation.py."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station-house/ui/tests/conftest.py",
+    "detail": "Three test files pin the fork as the AutoCue source:\n- conftest.py:18-21 puts only the fork root and fork/ui on sys.path. Once the vendored copies move, test modules that `import vdj_database_safety` at the top fail.\n- test_ml_training.py:28-29 asserts the fork root is in the ingest PYTHONPATH.\n- pw_bleed/scratch_env.py:30 sets REPO=parents[3], :139 sets PYTHONPATH=REPO, and it strips all VDJ_* env vars and overrides HOME.",
+    "fix": "conftest.py, after line 21 add:\nfrom sorter.autocue_path import ensure_autocue_on_path  # noqa: E402\nAUTOCUE_ROOT = ensure_autocue_on_path()\n\ntest_ml_training.py:28-29, replace with:\nfrom sorter.autocue_path import autocue_root\nself.assertTrue(env[\"PYTHONPATH\"].startswith(str(autocue_root())))\n\nscratch_env.py server_env(), add:\nVDJ_AUTOCUE_ROOT=os.environ.get(\"VDJ_AUTOCUE_ROOT\") or str(REAL_HOME / \"src\" / \"vdj-station\"),\n\nAdd ui/tests/test_autocue_path.py (write it first) covering: env override honored; default under the real home; RuntimeError when the root lacks files; never returns the fork root; root at sys.path[0]; RuntimeError when a module is shadowed."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station-house/ui/sorter/autocue_retry.py",
+    "detail": "Switch timing. The running 8788 (pid 39186, write mode, no --reload) keeps its imported fork modules until restart.\n\nMoving the vendored copies while it runs causes a mixed state:\n- The old helper re-checks its candidates on each call (autocue_path.py:37), so new AutoCue and ingest children switch to station code immediately.\n- grid_verify_worker fails to import vdj_cuer.\n- Lazy submodule imports in the UI process fail with ModuleNotFoundError: autocue_retry.py:134, app.py:654/806, grid_batch.py:311-344.\n\nAfter a proper restart, AutoCue jobs (:945-948, cwd :1073), ML ingest and grid-verify children import fresh station files at each spawn. In-process code (safe_write, cue_edit, grid_batch, stem_audit, llm) needs a restart to see later station edits.",
+    "fix": "Do the move only after 8788 is stopped and no vdj_cuer.autocue_job, vdj_cuer.ml.ingest or sorter.grid_verify_worker child is running (check with ps). Then start with the edited start_8788_write.sh. The background session task_30c6d5f1 is editing House UI files, so coordinate the restart with it. Restart 8787 (pid 94687, up since 2026-10-03) once the merge lands."
+   },
+   {
+    "severity": "medium",
+    "file": "/Users/kirilllanger/src/vdj-station",
+    "detail": "The station working tree is uncommitted (HEAD d73e430). Untracked modules are imported by tracked AutoCue code: vdj_cuer/cue_hygiene.py, cue_spread.py, deleted_markers.py, loop_seam_dsp.py, stem_color.py, stem_naming.py, vocal_gate.py. After the switch, any git stash, checkout or clean there breaks House AutoCue on its next spawned job.",
+    "fix": "Commit the station AutoCue work (including the merged House fixes) to a branch before switching. Optionally point VDJ_AUTOCUE_ROOT at a dedicated git worktree pinned to that commit."
+   },
+   {
+    "severity": "low",
+    "file": "/Users/kirilllanger/src/vdj-station/vdj_cuer/ml/model.py",
+    "detail": "DEFAULT_ARTIFACT (lines 24-25) is relative to the package. After the switch, House ingests retrain station's vdj_cuer/ml/artifacts/cue_bar_clf.joblib (a tracked file) and share it with 8787. Cross-process training is serialized by the lock in ingest.py:34-49 on the shared bars.jsonl, so this is safe, but the model becomes shared. Separately, merged autocue_safety_module() (_AUTOCUE_SAFETY_PATH = ~/src/vdj-automatic-cuer, a symlink to vdj-station) would load the same file, so the post-write 'second opinion' is no longer independent.",
+    "fix": "Choose which model pair to keep (see the merge-set issue). Accept the shared model, or note that the second-opinion check is now a self-check."
+   },
+   {
+    "severity": "low",
+    "file": "/Users/kirilllanger/src/vdj-station-house/ui/run.sh",
+    "detail": "Line 56 exports PYTHONPATH=REPO_ROOT (the fork), and the default PORT is 8787 (line 66), which collides with the station. It is not used to start 8788.",
+    "fix": "Optional: mirror the start-script change (export VDJ_AUTOCUE_ROOT with the default, then PYTHONPATH=$VDJ_AUTOCUE_ROOT), and update the echo on line 67."
+   },
+   {
+    "severity": "info",
+    "file": "/Users/kirilllanger/src/vdj-station-house-fest9",
+    "detail": "fest9 (uvicorn on 8799, pid 4908, since 2026-10-05) and vdj-station-house-bleed still vendor their own vdj_cuer. They are unaffected by this change and will not get station AutoCue fixes.",
+    "fix": "Out of scope. The same VDJ_AUTOCUE_ROOT pattern applies if wanted."
+   }
+  ],
+  "actions": [
+   "1. Ask Kirill before running any git command. Commit the ~/src/vdj-station AutoCue work-in-progress, including the untracked vdj_cuer modules, to a branch so the House is never tied to an uncommitted tree.",
+   "2. Land the House fixes in station, all in one step: scratchpad/merge/vdj_database_safety.py.merged, vdj_cuer/core.py.merged and vdj_cuer/file_processor.py.merged; House vdj_cue_patch.py; House tests/conftest.py (MUSIC_SORTER_ALLOW_LF_DB=1). For the ML model, copy cue_bar_clf.joblib and cue_bar_clf.json as a pair from House or from station, never the 0-byte .merged joblib. Fix the merged read-back check at merged:1457 (canonical_song_block before splice).",
+   "3. Verify station: run `PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp venv/bin/python -m pytest -p no:cacheprovider tests` in ~/src/vdj-station.",
+   "4. In the House repo, commit the current vendored AutoCue state (vdj_cuer/core.py, file_processor.py, vdj_database_safety.py, vdj_cue_patch.py, ML artifacts) so its history keeps it.",
+   "5. Confirm no AutoCue work is running (`ps -axo pid,command | grep -E 'vdj_cuer.autocue_job|vdj_cuer.ml.ingest|grid_verify_worker'`), then stop 8788 (pid 39186). Coordinate with background session task_30c6d5f1, which is editing House UI files.",
+   "6. Apply the House edits:\n- ui/sorter/autocue_path.py: replace the file with the VDJ_AUTOCUE_ROOT version, keeping the ensure_autocue_on_path() name.\n- ui/sorter/grid_preflight.py:331: repo_root = ensure_autocue_on_path().\n- ui/start_8788.sh and ui/start_8788_write.sh: export VDJ_AUTOCUE_ROOT and PYTHONPATH=$VDJ_AUTOCUE_ROOT on line 11, add AUTOCUE_DELETED_MARKERS_PATH, and use the strict provenance and safety-gate check in place of lines 26-29.\n- ui/tests/conftest.py: call ensure_autocue_on_path().\n- ui/tests/test_ml_training.py:28-29: assert against autocue_root().\n- ui/tests/pw_bleed/scratch_env.py: pass VDJ_AUTOCUE_ROOT explicitly.\n- Add ui/tests/test_autocue_path.py.\n- autocue_retry.py, ml_training.py and app.py need no changes.",
+   "7. Move the vendored copies out of the fork with mv, never rm: `mkdir -p ~/src/_attic/vdj-station-house-vendored-autocue-20261008 && cd ~/src/vdj-station-house`.\n- Required: `mv vdj_cuer vdj_database_safety.py compute_thread_limits.py ~/src/_attic/vdj-station-house-vendored-autocue-20261008/`.\n- Recommended: also move song_lane_color.py, vdj_cue_patch.py, automatic_music_cuer_gemini.py, apply_song_lane_colors.py and tests/ (the root AutoCue tests).\n- Leave ui/ and .env in place. Record the move in House git.",
+   "8. Run the House UI tests: `cd ~/src/vdj-station-house/ui && PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp ../venv/bin/python -m pytest -p no:cacheprovider tests --ignore=tests/pw_bleed`. Expect test_house_profile, test_crlf_hard_gate, test_song_row_form, test_house_folder_colors and test_vdj_running_detection to pass only if steps 2-3 landed.",
+   "9. Start the House with ui/start_8788_write.sh, or start_8788.sh for read-only. Check that .server-8788.log shows `[house-fork] vdj_database_safety = /Users/kirilllanger/src/vdj-station/vdj_database_safety.py` and `vdj_cuer = /Users/kirilllanger/src/vdj-station/vdj_cuer/__init__.py`, then run one AutoCue dry-run from the House UI.",
+   "10. Restart 8787 (pid 94687, running since 2026-10-03) at a quiet moment so its in-process modules match the merged station code."
+  ]
+ },
+ {
+  "verdict": "safe_with_fixes",
+  "summary": "The text merge is correct, but one semantic conflict has to be fixed before this can become canonical.\n\n(1) House changes: all present. `.merged` is byte-identical to `git merge-file -p station base house`, with no conflicts. A per-definition 3-way comparison shows all 41 House-only definitions identical to `.house`: the readonly guards, `LineEndingError`, the CRLF gate, Song-form checks and healing, `to_crlf`, `autocue_safety_module`, the post-write gate with rollback, the ps-based `is_virtualdj_running`, Pos dropped at 0, CRLF serialization, CRLF-checked recovery and the CRLF-checked `copy_database_atomically`. `import sys` is present too.\n\n(2) Station changes: present. The only station-side change since base is `rewrite_song_xml_in_database` (the `base_song_xml` stale check and the post-write read-back). It is identical to `.station`.\n\n(3) Structure: `ast.parse` passes, there are no duplicate top-level definitions, no conflict markers and no undefined globals (symtable check).\n\n(4) API compatibility: every symbol imported from `vdj_database_safety` exists in `.merged`. This covers both repos' `ui/app.py`, `ui/sorter/*.py` and `vdj_cuer/**/*.py`, including `import vdj_database_safety as V/_safety` attribute uses: 44 names, among them `_replace_database_parts_locked`, `canonical_song_block`, `legacy_fixture_mode`, `assert_crlf_bytes`, `assert_vdj_song_form` and `__file__`. All call sites are compatible with the merged signatures, including keyword args (`base_song_xml` at station `cue_writer.py:1217`, `**attrs` into `format_vdj_poi_line` at `cue_writer.py:1054`). Zero mismatches.\n\nBlocker: station's read-back check in `rewrite_song_xml_in_database` compares the caller's raw `song_xml` against the file. House's `_replace_database_parts_locked` now heals the whole file before writing, so `inject_pois_into_song_xml` and station `notes_edit` output no longer matches what lands on disk. Every AutoCue apply and most 8787 edits then raise \"Write read-back mismatch \u2026 treat as NOT saved\" even though the file was written. I reproduced this on a temp CRLF database and verified a one-line fix.\n\nTests: station tests need the House `MUSIC_SORTER_ALLOW_LF_DB` conftest, otherwise 14 new failures in `tests/` and 39 in `ui/tests`. With that flag and the fix, results match the station baseline: 134/135 in `tests/` and 153/153 in the `ui/tests` write tests. The one remaining failure is the existing `ModuleNotFoundError` for `sorter`. House gate tests behave the same with `.merged` as with `.house`.\n\nHouse-specific behavior in this module that would apply to 8787:\n- `MUSIC_SORTER_READONLY` guards. Inert on station, which never sets the variable.\n- `MUSIC_SORTER_ALLOW_LF_DB` test-fixture bypass.\n- A hardcoded `/Users/kirilllanger/src/vdj-automatic-cuer` second-opinion path. It is a symlink to vdj-station, so it loads the station working tree.\n- Much slower writes, because of the Song-form scan and the full re-parse after each write.\n- Pos omitted at 0:00, which the station `cue_edit` move path does not handle.\n\nThere is no `profile=house` or notes-dir logic in this module.",
+  "issues": [
+   {
+    "severity": "critical",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "Semantic conflict between station's read-back in rewrite_song_xml_in_database (merged:1454-1460, `if _n2(song_xml) not in _n2(back): raise RuntimeError('Write read-back mismatch ... treat as NOT saved.')`) and House's whole-file `heal_song_form` in `_replace_database_parts_locked` (merged:1532). heal rewrites `\\r\\n</Song>` to `\\r\\n </Song>` and moves a late <Comment> to just after <Infos>. Two producers always emit exactly those seams: `inject_pois_into_song_xml` (merged:1000-1011, where `rstrip(' \\t')` drops the space before </Song> and Comment is appended after the Pois) and station `ui/sorter/notes_edit.py:35-59 apply_comment_to_song_xml`. Reproduced on a VDJ-form CRLF temp DB. With `.station` and `.house` the write is OK. With `.merged` it raises RuntimeError for inject without a comment, inject with a comment, and the notes_edit comment, yet the file WAS changed (cue/comment present). There is no rollback because the check sits outside the rollback block. Impact: station `vdj_cuer/cue_writer.py:1217` returns False ('Error applying cues') for every AutoCue track and skips `_invalidate_metadata_cache`. Every 8787 UI edit through `rewrite_song_xml_in_database` (cue_edit, notes_edit, bpm_edit, grid_edit, poi_rename, relocate) reports failure after a successful write, and a retry then trips the base_song_xml stale check. Existing tests do not catch it because `MUSIC_SORTER_ALLOW_LF_DB=1` disables heal.",
+    "fix": "In `rewrite_song_xml_in_database`, inside `if newline == \"\\r\\n\":` right after merged:1431, add: `if not legacy_fixture_mode(): song_xml = heal_song_form(song_xml.encode(\"utf-8\")).decode(\"utf-8\")`. The block that is size-guarded and read back is then exactly what the whole-file heal writes; heal is idempotent on that region. Verified with a scratch copy: the probes pass, the 135 station tests give 134 pass + 1 existing failure, the 153 station ui write tests pass, and the House gate tests give 33 pass + 6 skipped."
+   },
+   {
+    "severity": "high",
+    "file": "/Users/kirilllanger/src/vdj-station/tests (missing conftest.py), /Users/kirilllanger/src/vdj-station/ui/tests (missing conftest.py)",
+    "detail": "The merged CRLF and Song-form hard gates (merged:502-517, 665-673, 1540-1542, 1654) reject the station's LF / no-XML-declaration / column-0 <Song> fixtures. Measured with `.merged` injected and no flag: tests/ subset gives 15 failed / 120 passed, versus 1 failed with `.station`. ui/tests write tests (test_relocate, test_playlist_assemble, test_cue_edit, test_notes_edit, test_bpm_edit, test_grid_edit, test_poi_rename) give 39 failed / 114 passed, versus 0 failed. Every new failure is a LineEndingError from fixtures. With MUSIC_SORTER_ALLOW_LF_DB=1 the results match baseline. House carries untracked conftests for this: /Users/kirilllanger/src/vdj-station-house/tests/conftest.py, plus ui/tests/conftest.py:26. House's own gate tests (ui/tests/test_crlf_hard_gate.py, test_song_row_form.py) import the House-only sorter.safe_write, so they cannot be copied verbatim.",
+    "fix": "Add vdj-station/tests/conftest.py with `os.environ.setdefault(\"MUSIC_SORTER_ALLOW_LF_DB\", \"1\")`, and the same line in a vdj-station/ui/tests/conftest.py. Add station-side tests that clear the flag and cover: CRLF gate refusal, Song-form refusal, heal, and a rewrite_song_xml_in_database round trip on a VDJ-form CRLF DB using inject_pois_into_song_xml(comment=...). That round trip is the regression test for the critical issue."
+   },
+   {
+    "severity": "medium",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "House-specific hardcoded second-opinion module: `_AUTOCUE_SAFETY_PATH = Path('/Users/kirilllanger/src/vdj-automatic-cuer/vdj_database_safety.py')` (merged:698), loaded by `autocue_safety_module()` (merged:702-726) and used by `_post_write_gate` (merged:1614-1622). `/Users/kirilllanger/src/vdj-automatic-cuer` is a symlink to vdj-station. Once canonical, the station process re-execs its own file as a second module, so the 'independent' opinion is the same code. Any other checkout (House forks, -fest9/-bleed, git worktrees) validates every write with whatever is in vdj-station's working tree at that moment. cProfile confirmed database_integrity_stats running from the station WT file (vdj_database_safety.py:505). An import error silently falls back to self.",
+    "fix": "For canonical station, default to `sys.modules[__name__]` and use an external module only when MUSIC_SORTER_AUTOCUE_SAFETY_PATH is set. Have House's ui/start_8788.sh and start_8788_write.sh export MUSIC_SORTER_AUTOCUE_SAFETY_PATH if House still wants the cross-check."
+   },
+   {
+    "severity": "medium",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "Write latency and lock hold time grow a lot for 8787 and AutoCue. Single rewrite_song_xml_in_database on a synthetic 21 MB VDJ-form CRLF DB (17k songs x 8 cues): `.station` 0.45 s, merged + fix 12.7 s. cProfile breakdown (inflated by profiling): song_form_problems 11.7 s (153k `_attr_order_ok` calls), `_post_write_gate` 7.7 s (iterparse plus `_raw_integrity_stats`), heal 0.66 s. House's own comment (merged:1609-1611) says about 3 s on the real 38 MB DB. The exclusive flock is held for the whole time, so 8787 click edits and concurrent AutoCue children serialize on multi-second writes. House already accepts this.",
+    "fix": "Accept as is, or reduce the cost: run `assert_vdj_song_form` attribute-order checks only on the spliced region, or cache the result for unchanged prefix/suffix. Note the latency change for the 8787 UI."
+   },
+   {
+    "severity": "medium",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "House read-only profile guards live in this module, keyed only on MUSIC_SORTER_READONLY: `readonly_mode` / `ReadOnlyModeError` / `_refuse_if_readonly` (merged:32-51). `assert_safe_to_write_vdj_database` refuses (merged:113). `snapshot_last_good_database` returns None (merged:254). Auto-recovery is disabled (merged:341). `vdj_database_exclusive_lock` refuses even to create the lock file (merged:754). `copy_database_atomically` refuses (merged:1653). The station repo never references MUSIC_SORTER_READONLY (grep found nothing), so 8787 is unchanged unless the variable leaks into its environment. AutoCue children launched from House's start_8788.sh environment (which exports MUSIC_SORTER_READONLY=1) will refuse all writes, which is intended. No profile=house, notes-dir or fs_guard logic is in this module; that lives in House ui/sorter/profile.py and fs_guard.py and the start_8788*.sh scripts.",
+    "fix": "Keeping it is acceptable because it is inert without the variable. Optionally reword messages that say 'Read-only (VDJ open)' to something profile-neutral, and document the variable in the station README."
+   },
+   {
+    "severity": "low",
+    "file": "/Users/kirilllanger/src/vdj-station/ui/sorter/cue_edit.py",
+    "detail": "House change: format_vdj_poi_line omits Pos when it is 0 (merged:853), matching VDJ. Station's move path returns the tag unchanged when there is no Pos attribute (cue_edit.py:1167 `if not _POS_ATTR_RE.search(tag): return tag`), so set_poi_position raises KeyError for a marker at 0:00. House fixed this with `_tag_with_pos` (vdj-station-house/ui/sorter/cue_edit.py:755-771). Readers are fine because they default Pos to 0: merged:931, station practice_sets.py:125, relocate.py:332, vdj_cue_patch.py:111.",
+    "fix": "Port House's `_tag_with_pos` into station cue_edit.set_poi_position_in_song_xml so that moving from 0 adds Pos and moving to 0 removes it."
+   },
+   {
+    "severity": "low",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "Stale check (merged:1421-1427) compares the raw text of base_song_xml against the current block. Another process's whole-file heal (merged:1532) can cosmetically rewrite this song between AutoCue's read and its write. For example, rows previously written by station-only code end in a column-0 `</Song>`, as shown by the station probe output. This causes a false 'Song changed \u2026 nothing written' refusal. Also, the read-back (merged:1454-1460) runs after os.replace and outside the rollback, so even a genuine mismatch leaves new bytes on disk while the message says 'NOT saved'.",
+    "fix": "Compare canonical forms in the stale check: apply `heal_song_form` (or `canonical_song_block`) to both sides when not in legacy_fixture_mode(). Either do the content check on candidate_raw before the replace, or change the message to say the write landed but its content differs."
+   },
+   {
+    "severity": "info",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged",
+    "detail": "Dead code in `_post_write_gate` at merged:1612-1613: `if back is not expected_raw and back != expected_raw:` cannot be reached, because line 1608-1609 already raised on inequality. Harmless; inherited unchanged from House.",
+    "fix": "Optional cleanup."
+   },
+   {
+    "severity": "info",
+    "file": "/Users/kirilllanger/src/vdj-station-house/vdj_cue_patch.py",
+    "detail": "There is a House-side AutoCue-adjacent change outside the stated merge set. `git diff dc2206f --stat` in House shows vdj_cue_patch.py with 18 changed lines: it imports assert_crlf_bytes/assert_vdj_song_form and gates the candidate before replacing, and it delegates is_virtualdj_running to the safety module. Station's vdj_cue_patch.py:271-276 still uses shutil.move of an ElementTree-serialized temp file that bypasses all safety gates. Both imported symbols exist in `.merged`. Note that the ElementTree output has no XML declaration, so the ported gate would refuse cue patches.",
+    "fix": "Decide explicitly whether to port House's vdj_cue_patch.py changes, so the 'fixes last in AutoCue' goal covers this writer too."
+   },
+   {
+    "severity": "info",
+    "file": "/private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge",
+    "detail": "Review artifacts I created by mistake in the merge directory: vdj_database_safety.py.patched_probe (the merged file plus the one-line fix, used for verification) and __pycache__/vdj_database_safety.py.cpython-312.pyc (my `python -I` probes ignored PYTHONDONTWRITEBYTECODE). Under the read-only rule I did not delete them. A glob such as `vdj_database_safety.py.*` would pick up the probe file. Everything else I wrote is under scratchpad/review and scratchpad/runenv. pytest ran with -p no:cacheprovider, PYTHONDONTWRITEBYTECODE=1, and HOME/TMPDIR pointed at the scratchpad. All database writes went to scratch temp DBs. The real VDJ folder was never touched.",
+    "fix": "The orchestrator should remove scratchpad/merge/vdj_database_safety.py.patched_probe and scratchpad/merge/__pycache__ before globbing the merge outputs."
+   }
+  ],
+  "actions": [
+   "Take /private/tmp/claude-501/-Users-kirilllanger-Desktop-Development-music-sorter/d9714134-9219-48e2-9a3b-95bbbfa2a59a/scratchpad/merge/vdj_database_safety.py.merged as the canonical vdj_database_safety.py. It is a clean, complete 3-way merge with all House and station hunks intact.",
+   "Before installing it, edit rewrite_song_xml_in_database: inside `if newline == \"\\r\\n\":` directly after the CRLF-forcing line (merged:1431), add `if not legacy_fixture_mode():` / `song_xml = heal_song_form(song_xml.encode(\"utf-8\")).decode(\"utf-8\")`. Without this, every AutoCue apply and most 8787 edits raise 'Write read-back mismatch \u2026 treat as NOT saved' after a successful write.",
+   "Optionally harden the stale check at merged:1421-1427 by comparing heal_song_form/canonical_song_block forms of both sides when not in legacy_fixture_mode().",
+   "Add /Users/kirilllanger/src/vdj-station/tests/conftest.py and /Users/kirilllanger/src/vdj-station/ui/tests/conftest.py setting os.environ.setdefault('MUSIC_SORTER_ALLOW_LF_DB','1'), as House's tests/conftest.py and ui/tests/conftest.py:26 do.",
+   "Add station regression tests with the flag cleared: VDJ-form CRLF DB, then inject_pois_into_song_xml(comment='x'), then rewrite_song_xml_in_database(base_song_xml=...). Assert no exception, ' </Song>' indentation, and Comment placed after Infos. Also add CRLF-gate and Song-form refusal tests.",
+   "Change _AUTOCUE_SAFETY_PATH handling (merged:698-726) so canonical station defaults to self and uses an external module only when MUSIC_SORTER_AUTOCUE_SAFETY_PATH is set. Have House's start_8788*.sh export that variable if the cross-check is still wanted.",
+   "Port House's _tag_with_pos (vdj-station-house/ui/sorter/cue_edit.py:755-771) into station ui/sorter/cue_edit.py set_poi_position_in_song_xml (line ~1167) so markers at 0:00 (no Pos) can be moved.",
+   "Decide whether to also port House's vdj_cue_patch.py change (18 lines: CRLF/Song-form gate, shared is_virtualdj_running). It is outside the stated merge set.",
+   "Re-run the station suites against the installed module: tests/ (expect 134/135, the one failure being the existing ModuleNotFoundError for 'sorter' in test_vdj_write_gate) and ui/tests (expect all 153 write tests to pass).",
+   "Delete my stray review artifacts before globbing merge outputs: scratchpad/merge/vdj_database_safety.py.patched_probe and scratchpad/merge/__pycache__/."
+  ]
+ }
+]

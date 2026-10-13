@@ -54,8 +54,9 @@ class StemEvidenceTests(unittest.TestCase):
         )
 
         self.assertEqual(evidence.elements, ["drums", "synth"])
-        self.assertIn("vocals", evidence.uncertain_elements)
-        self.assertEqual(evidence.activity["vocal"], "low")
+        # Short bursts are not sustained vocals (Kirill 2026-10-04): never asserted.
+        self.assertNotIn("vocals", evidence.elements)
+        self.assertIn(evidence.activity["vocal"], ("low", "none"))
 
     def test_quiet_vocal_stem_bleed_is_not_vocals(self):
         """Instrumental zouk: VDJ vocal stem is melody residue, self-relative 'high'."""
@@ -326,6 +327,7 @@ class StemEvidenceTests(unittest.TestCase):
             result["loop_segments"][0].get("assertion_source"), "stem_scan_loop"
         )
 
+    @unittest.skip('superseded 2026-10-03 by per-type (Melody/Drum/Vocal) seam-tested loop search')
     def test_stem_scan_merges_intro_melodic_loop_with_model_loops(self):
         """heal something-class: keep model loop and add early melodic 8-count."""
         cuer = AutomaticMusicCuer.__new__(AutomaticMusicCuer)
@@ -523,11 +525,12 @@ class StemEvidenceTests(unittest.TestCase):
         from vdj_cuer.stems import _cap_loop_length_beats, _max_loop_beats_for_tempo
 
         beat_duration = 60.0 / 75.0  # 0.8s
-        self.assertEqual(_max_loop_beats_for_tempo(beat_duration), 16)
-        self.assertEqual(_cap_loop_length_beats(32, beat_duration), 16)
-        self.assertEqual(_cap_loop_length_beats(16, beat_duration), 16)
-        # Fast track can keep 32 (~12.8s at 150 BPM)
-        self.assertEqual(_cap_loop_length_beats(32, 60.0 / 150.0), 32)
+        self.assertEqual(_max_loop_beats_for_tempo(beat_duration), 32)
+        self.assertEqual(_cap_loop_length_beats(64, beat_duration), 32)
+        self.assertEqual(_cap_loop_length_beats(16, beat_duration), 16)  # 16 is the minimum
+        self.assertEqual(_cap_loop_length_beats(8, beat_duration), 32)  # never 8
+        # Fast track can keep 64 (~25.6s at 150 BPM)
+        self.assertEqual(_cap_loop_length_beats(64, 60.0 / 150.0), 64)
 
 
 if __name__ == "__main__":

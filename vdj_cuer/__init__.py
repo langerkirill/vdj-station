@@ -1,5 +1,7 @@
 """VirtualDJ automatic cue generation package."""
 
+from ._version import __version__
+
 from .common import (
     BatchMusicAnalysis,
     BeatgridAlignment,
@@ -20,6 +22,7 @@ from .common import (
 from .core import AutomaticMusicCuer
 
 __all__ = [
+    "__version__",
     "AutomaticMusicCuer",
     "BatchMusicAnalysis",
     "BeatgridAlignment",

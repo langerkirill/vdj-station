@@ -22,6 +22,11 @@ Historical note: GitHub repo `langerkirill/vdj-automatic-cuer` redirects to **`l
 
 This used to be “just” an AutoCue CLI. The station is the day-to-day product; the CLI is still there for batch jobs.
 
+> **AutoCue source of truth (2026-10-12):** AutoCue (`vdj_cuer/`, the `vdj-autocue` package)
+> is built and released from this repo, starting with 1.2.0. The old `vdj-autocue-lab` repo
+> and its `~/src/vdj-autocue-lab-install` checkout are retired: read-only, history kept, no new
+> work there. Release 1.0.0 (built from the lab) stays installed under `~/.vdj-autocue/releases/`.
+
 | Interface | What it’s for |
 |-----------|----------------|
 | **Music Sorter UI** (`ui/`) | House/Sauna Fest: Add Cues → copy-sort, Recs, Set Overview, Practice |

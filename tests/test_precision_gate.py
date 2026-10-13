@@ -13,7 +13,7 @@ def cue(timestamp, confidence=0.9, elements=None, name="Section"):
     }
 
 
-def loop(start, confidence=0.9, elements=None, beats=16):
+def loop(start, confidence=0.9, elements=None, beats=32):
     return {
         "start": start,
         "confidence": confidence,
@@ -121,7 +121,7 @@ class PrecisionGateTests(unittest.TestCase):
         next_phrase = phase + 16 * beat
         analysis = {
             "measure_changes": [cue(two_bars, name="Groove")],
-            "loop_segments": [loop(two_bars, beats=8)],
+            "loop_segments": [loop(two_bars, beats=32)],
         }
         result = apply_precision_gate(
             analysis, bpm=bpm, beatgrid_offset=phase

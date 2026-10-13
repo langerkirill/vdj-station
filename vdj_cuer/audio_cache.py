@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
-from .stem_evidence import StemProfile
+from .stem_evidence import ENERGY_BAND_STEMS, VOICE_BAND_STEMS, StemProfile
 
 
 @dataclass
@@ -30,7 +30,12 @@ class TrackAudioCache:
         with self._lock:
             for stem_name, path in stem_files:
                 if stem_name not in self.stem_profiles:
-                    self.stem_profiles[stem_name] = StemProfile.decode(path)
+                    self.stem_profiles[stem_name] = StemProfile.decode(
+                        path,
+                        voice=(stem_name == "vocal"),
+                        band=(stem_name in VOICE_BAND_STEMS),
+                        energy=(stem_name in ENERGY_BAND_STEMS),
+                    )
             return dict(self.stem_profiles)
 
     def get_or_load_mix_profile(self, audio_path: str) -> StemProfile:

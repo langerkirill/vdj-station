@@ -207,6 +207,22 @@ def run_one(
             analysis_data = cuer._postprocess_loop_segments(
                 analysis_data, working_bpm, song_length
             )
+        if has_stems and scope in (WRITE_SCOPE_CUES, WRITE_SCOPE_ALL):
+            from .cue_spread import enforce_min_gap, thirds_coverage
+
+            _kept, _dropped = enforce_min_gap(
+                list(analysis_data.get("measure_changes") or []), working_bpm
+            )
+            for _d in _dropped:
+                print(
+                    f"  ✂️  Dropped cue @ {float(_d.get('timestamp', 0)):.3f}s "
+                    "(< 32 beats from previous cue)"
+                )
+            analysis_data["measure_changes"] = _kept
+            _thirds = thirds_coverage(_kept, song_length)
+            print(f"  📐 Cues per third of song: {_thirds}")
+            if 0 in _thirds:
+                print("  ⚠️  A third of the song has no cue")
         loop_n = len(analysis_data.get("loop_segments") or [])
         cue_n = len(analysis_data.get("measure_changes") or [])
         print(
@@ -226,6 +242,12 @@ def run_one(
                     "(Gemini/stem gates rejected all candidates)."
                 )
             print(f"⚠️  {note}")
+        if scope == WRITE_SCOPE_ALL and loop_n == 0:
+            note = (
+                "No loops passed the seam test within the candidate cap; "
+                "writing cues with zero loops (acceptable)."
+            )
+            print(f"ℹ️  LOOPS: none written — {note}")
         print(f"Writing cues to VirtualDJ · {audio.name}…")
         if not dry_run:
             try:
@@ -238,6 +260,8 @@ def run_one(
                 str(audio), analysis_data, dry_run=dry_run
             )
         )
+        if not applied and getattr(cuer, "last_apply_note", ""):
+            note = cuer.last_apply_note
         return analysis_data, applied, note
 
     analysis, ok, warn_msg = run_with_mix_only_stem_failover(cuer, _analyze_and_apply)

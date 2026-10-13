@@ -1,0 +1,9 @@
+# Test failures that predate the vdj-autocue package (stale tests from the station/House merge).
+# release.py allows exactly these; anything else blocks a release. Remove a line when its test
+# is fixed. JUnit ids: <classname>::<name>.
+tests.test_analysis_cache.AnalysisCacheAssetTests::test_gemini_analysis_consults_cache
+tests.test_ml_hybrid.BlendCuePlansTests::test_weak_sixth_ml_does_not_block_stem_phrase_start
+tests.test_ml_labels.TrainingPathTests::test_add_cues_is_excluded
+tests.test_ml_labels.TrainingPathTests::test_cues_sorted_is_allowed_ready_is_not
+ui.tests.test_banner_cover_legend_menu.DragOverlayTests::test_overlay_is_transform_only_and_canvas_is_not_redrawn_per_frame
+ui.tests.test_placements_regression.LazyListContractTests::test_sort_and_add_cues_lists_skip_placements_and_expose_lazy_lookup

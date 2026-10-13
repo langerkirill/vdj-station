@@ -138,6 +138,7 @@ class WriteScopePrepareTests(unittest.TestCase):
                     "loop_name": "Bass",
                     "color": "blue",
                     "confidence": 0.9,
+                    "seam": {"passed": True},
                 }
             ],
         }
@@ -161,6 +162,61 @@ class WriteScopePrepareTests(unittest.TestCase):
         self.assertEqual(prepared.cues[0].name, "Intro")
         self.assertGreaterEqual(len(prepared.loops), 1)
         self.assertTrue(any("Bass" in loop.name for loop in prepared.loops))
+
+    def test_loop_without_passing_seam_score_is_refused(self):
+        cuer = self._cuer()
+        cuer.write_scope = WRITE_SCOPE_LOOPS
+        existing_cues = [
+            PreparedPoi(
+                kind="cue",
+                name="Intro",
+                position=1.0,
+                color_name="orange",
+                color_value="4294934272",
+                elements=["preserved"],
+            )
+        ]
+        analysis = {
+            "measure_changes": [
+                {
+                    "timestamp": 5.0,
+                    "elements": ["drums"],
+                    "cue_name": "ShouldNotWrite",
+                    "color": "green",
+                    "confidence": 0.9,
+                }
+            ],
+            "loop_segments": [
+                {
+                    "start": 16.0,
+                    "length_beats": 16,
+                    "elements": ["bass", "synth"],
+                    "loop_name": "Bass",
+                    "color": "blue",
+                    "confidence": 0.9,
+                    "seam": {"passed": False},
+                }
+            ],
+        }
+
+        with patch.object(
+            cuer, "_finalize_analysis_for_write", return_value=(analysis, 120.0, 200.0)
+        ), patch.object(
+            cuer, "get_beatgrid_offset", return_value=0.0
+        ), patch.object(
+            cuer, "validate_timing_hybrid", side_effect=lambda *a, **k: float(a[0])
+        ), patch.object(
+            cuer, "validate_color_assignment", return_value="blue"
+        ), patch.object(
+            cuer, "create_loop_name", return_value="Bass"
+        ), patch.object(
+            cuer, "_load_existing_prepared_pois", return_value=(existing_cues, [])
+        ):
+            prepared = cuer.prepare_song_cues("/music/track.flac", analysis)
+
+        self.assertEqual(len(prepared.cues), 1)
+        self.assertEqual(prepared.cues[0].name, "Intro")
+        self.assertEqual(len(prepared.loops), 0)
 
     def test_cli_flags_are_mutually_exclusive(self):
         from automatic_music_cuer_gemini import main

@@ -1,0 +1,69 @@
+diff --git a/ui/sorter/relocate.py b/ui/sorter/relocate.py
+index b56d0d4..3b40407 100644
+--- a/ui/sorter/relocate.py
++++ b/ui/sorter/relocate.py
+@@ -1732,27 +1732,43 @@ def remove_song_entry_from_database(
+     if create_backup:
+         backup = backup_database(db)
+ 
+-    original_stats = _lightweight_rewrite_stats(content, db)
+-    # Pre-adjust expected stats so validate_database_replacement allows this.
+-    removed_bytes = len(removed_chunk.encode("utf-8"))
+-    adjusted_stats = {
+-        "size_bytes": max(0, int(original_stats["size_bytes"]) - removed_bytes),
+-        "song_count": max(0, int(original_stats["song_count"]) - 1),
+-        "cue_loop_count": max(0, int(original_stats["cue_loop_count"]) - removed_cues),
+-    }
+-
+-    # Size check uses 75% floor on large DBs — single song is tiny; keep size
+-    # close enough by using the true original size and only tightening song/cues.
+-    # validate: song_count must not *drop below* adjusted; candidate will match.
+-    # For size: candidate ≈ original - removed; if original >= 1MB and we only
+-    # remove one song, size stays well above 75%.
+-    with vdj_db_write():
+-        atomic_replace_database_parts(
+-            db,
+-            (content[:start], content[end:]),
+-            original_stats=adjusted_stats,
+-            stats_fn=_lightweight_content_stats,
+-        )
++    try:
++        from vdj_database_safety import remove_song_xml_in_database
++    except ImportError:  # an older AutoCue copy without the locked helper
++        remove_song_xml_in_database = None
++    if remove_song_xml_in_database is None:
++        original_stats = _lightweight_rewrite_stats(content, db)
++        removed_bytes = len(removed_chunk.encode("utf-8"))
++        adjusted_stats = {
++            "size_bytes": max(0, int(original_stats["size_bytes"]) - removed_bytes),
++            "song_count": max(0, int(original_stats["song_count"]) - 1),
++            "cue_loop_count": max(0, int(original_stats["cue_loop_count"]) - removed_cues),
++        }
++        with vdj_db_write():
++            atomic_replace_database_parts(
++                db,
++                (content[:start], content[end:]),
++                original_stats=adjusted_stats,
++                stats_fn=_lightweight_content_stats,
++            )
++        engine = {"removed": True, "cue_loop_pois_removed": removed_cues}
++    else:
++        del content
++        # Re-read, splice and validate inside the database write lock (the engine lowers
++        # the integrity expectation by exactly this song). The read above is only the
++        # preview: splicing that copy could undo an AutoCue write that landed since
++        # (review 2026-10-09).
++        with vdj_db_write():
++            engine = remove_song_xml_in_database(db, path_in_db)
++    if not engine.get("removed"):
++        return {
++            "removed_from_db": False,
++            "path_in_db": path_in_db,
++            "database_backup": backup,
++            "dry_run": False,
++            "reason": "not_in_database",
++        }
++    removed_cues = int(engine.get("cue_loop_pois_removed", removed_cues))
+ 
+     return {
+         "removed_from_db": True,

@@ -1,0 +1,42 @@
+# AutoCue as a pip package. Releases are git tags vX.Y.Z on this private repo (see
+# docs/autocue-lab/RELEASING.md); the Mac's auto-updater installs the newest tagged version its
+# rule allows (default: vdj-autocue>=<installed>, no upper bound) after testing it there.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vdj-autocue"
+dynamic = ["version"]
+description = "AutoCue: cue points, loops and colors for VirtualDJ, written safely into database.xml"
+readme = "CHANGELOG.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.5.0",
+    "joblib>=1.4.0",
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[tool.setuptools]
+# what AutoCue runs; the Music Sorter UI (ui/), tests, bench data, docs and the House copy
+# are not part of the package
+packages = ["vdj_cuer", "vdj_cuer.ml", "vdj_audit"]
+py-modules = [
+    "vdj_database_safety",
+    "vdj_cue_patch",
+    "song_lane_color",
+    "compute_thread_limits",
+    "automatic_music_cuer_gemini",
+    "restore_song_markers",
+]
+include-package-data = false
+
+[tool.setuptools.package-data]
+"vdj_cuer.ml" = ["artifacts/cue_bar_clf.joblib", "artifacts/cue_bar_clf.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "vdj_cuer._version.__version__" }

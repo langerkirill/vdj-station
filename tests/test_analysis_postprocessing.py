@@ -191,8 +191,9 @@ class AnalysisPostprocessingTests(unittest.TestCase):
             song_length=120,
         )
 
-        self.assertEqual(len(fixed["loop_segments"]), 1)
-        self.assertEqual(fixed["loop_segments"][0]["length_beats"], 16)
+        # Min loop is 16 beats (round 2): a 32-beat loop that would cross a section change
+        # is shortened to 16, never to 8.
+        self.assertEqual([l["length_beats"] for l in fixed["loop_segments"]], [16])
 
     def test_deletes_loop_when_section_change_is_too_close(self):
         analysis = {

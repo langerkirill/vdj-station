@@ -1,0 +1,148 @@
+diff --git a/ui/sorter/autocue_path.py b/ui/sorter/autocue_path.py
+index 37e89ec..bca3b73 100644
+--- a/ui/sorter/autocue_path.py
++++ b/ui/sorter/autocue_path.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ import sys
+ from pathlib import Path
+ 
+@@ -20,7 +21,23 @@ def ensure_autocue_on_path() -> Path:
+               autocue_path.py
+ 
+     Also supports older checkouts named vdj-automatic-cuer.
++
++    ``VDJ_AUTOCUE_ROOT`` (the canonical AutoCue checkout) wins over everything
++    else and goes to the front of sys.path, ahead of any vendored copy here.
+     """
++    override = os.environ.get("VDJ_AUTOCUE_ROOT", "").strip()
++    if override:
++        root = Path(override).expanduser().resolve()
++        if not (root / "vdj_database_safety.py").is_file():
++            raise RuntimeError(
++                f"VDJ_AUTOCUE_ROOT={override} has no vdj_database_safety.py; "
++                "point it at the canonical AutoCue checkout."
++            )
++        path_str = str(root)
++        if path_str in sys.path:
++            sys.path.remove(path_str)
++        sys.path.insert(0, path_str)
++        return root
+     here = Path(__file__).resolve()
+     home = Path.home()
+     candidates = [
+diff --git a/ui/sorter/grid_preflight.py b/ui/sorter/grid_preflight.py
+index 9327dc4..3fb3d14 100644
+--- a/ui/sorter/grid_preflight.py
++++ b/ui/sorter/grid_preflight.py
+@@ -328,7 +328,7 @@ def _deep_verify_alignment(
+ ) -> dict[str, Any]:
+     """Run onset verify in a new session so uvicorn --reload cannot EPIPE ffmpeg."""
+     ui_root = Path(__file__).resolve().parents[1]
+-    repo_root = Path(__file__).resolve().parents[2]
++    repo_root = ensure_autocue_on_path()
+     env = os.environ.copy()
+     env["PYTHONPATH"] = os.pathsep.join(
+         [str(repo_root), str(ui_root), env.get("PYTHONPATH", "")]
+diff --git a/ui/start_8788.sh b/ui/start_8788.sh
+index 6561ab8..9c8b1c0 100755
+--- a/ui/start_8788.sh
++++ b/ui/start_8788.sh
+@@ -8,7 +8,16 @@ export MUSIC_SORTER_PROFILE=house
+ export MUSIC_SORTER_READONLY=1
+ export MUSIC_SORTER_GEMINI_MODEL=gemini-3.8-flash
+ export MUSIC_SORTER_NOTES_DIR="$HOME/Music/DJ/Notes/House-8788"
+-export PYTHONPATH="$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++# AutoCue (vdj_cuer, vdj_database_safety, vdj_cue_patch) comes from the canonical
++# checkout when VDJ_AUTOCUE_ROOT is set (sorter/autocue_path.py puts it first on
++# sys.path). Unset = the fork's vendored copy, as before.
++export VDJ_AUTOCUE_ROOT="${VDJ_AUTOCUE_ROOT:-}"
++if [ -n "$VDJ_AUTOCUE_ROOT" ]; then
++  [ -f "$VDJ_AUTOCUE_ROOT/vdj_database_safety.py" ] || { echo "[start_8788] VDJ_AUTOCUE_ROOT=$VDJ_AUTOCUE_ROOT has no vdj_database_safety.py"; exit 1; }
++  export PYTHONPATH="$VDJ_AUTOCUE_ROOT:$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++else
++  export PYTHONPATH="$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++fi
+ mkdir -p "$MUSIC_SORTER_NOTES_DIR"   # the ONLY directory this fork creates up front
+ # Gemini key: loaded by sorter/vdj_cuer from the fork's own .env (never printed).
+ set -a; [ -f "$FORK_ROOT/.env" ] && . "$FORK_ROOT/.env"; set +a
+@@ -22,7 +31,7 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+ export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-1}"
+ export PYTHONUNBUFFERED=1
+-echo "[start_8788] fork=$FORK_ROOT profile=$MUSIC_SORTER_PROFILE readonly=$MUSIC_SORTER_READONLY notes=$MUSIC_SORTER_NOTES_DIR model=$MUSIC_SORTER_GEMINI_MODEL"
++echo "[start_8788] fork=$FORK_ROOT autocue=${VDJ_AUTOCUE_ROOT:-fork} profile=$MUSIC_SORTER_PROFILE readonly=$MUSIC_SORTER_READONLY notes=$MUSIC_SORTER_NOTES_DIR model=$MUSIC_SORTER_GEMINI_MODEL"
+ "$FORK_ROOT/venv/bin/python" - <<'PY'
+ import vdj_database_safety, sys
+ print("[start_8788] vdj_database_safety =", vdj_database_safety.__file__)
+diff --git a/ui/start_8788_write.sh b/ui/start_8788_write.sh
+index 1f6bda3..59c062c 100755
+--- a/ui/start_8788_write.sh
++++ b/ui/start_8788_write.sh
+@@ -8,7 +8,16 @@ export MUSIC_SORTER_PROFILE=house
+ export MUSIC_SORTER_READONLY=0
+ export MUSIC_SORTER_GEMINI_MODEL=gemini-3.8-flash
+ export MUSIC_SORTER_NOTES_DIR="$HOME/Music/DJ/Notes/House-8788"
+-export PYTHONPATH="$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++# AutoCue (vdj_cuer, vdj_database_safety, vdj_cue_patch) comes from the canonical
++# checkout when VDJ_AUTOCUE_ROOT is set (sorter/autocue_path.py puts it first on
++# sys.path). Unset = the fork's vendored copy, as before.
++export VDJ_AUTOCUE_ROOT="${VDJ_AUTOCUE_ROOT:-}"
++if [ -n "$VDJ_AUTOCUE_ROOT" ]; then
++  [ -f "$VDJ_AUTOCUE_ROOT/vdj_database_safety.py" ] || { echo "[start_8788] VDJ_AUTOCUE_ROOT=$VDJ_AUTOCUE_ROOT has no vdj_database_safety.py"; exit 1; }
++  export PYTHONPATH="$VDJ_AUTOCUE_ROOT:$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++else
++  export PYTHONPATH="$FORK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++fi
+ mkdir -p "$MUSIC_SORTER_NOTES_DIR"   # the ONLY directory this fork creates up front
+ # Gemini key: loaded by sorter/vdj_cuer from the fork's own .env (never printed).
+ set -a; [ -f "$FORK_ROOT/.env" ] && . "$FORK_ROOT/.env"; set +a
+@@ -22,7 +31,7 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+ export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-1}"
+ export PYTHONUNBUFFERED=1
+-echo "[start_8788] fork=$FORK_ROOT profile=$MUSIC_SORTER_PROFILE readonly=$MUSIC_SORTER_READONLY notes=$MUSIC_SORTER_NOTES_DIR model=$MUSIC_SORTER_GEMINI_MODEL"
++echo "[start_8788] fork=$FORK_ROOT autocue=${VDJ_AUTOCUE_ROOT:-fork} profile=$MUSIC_SORTER_PROFILE readonly=$MUSIC_SORTER_READONLY notes=$MUSIC_SORTER_NOTES_DIR model=$MUSIC_SORTER_GEMINI_MODEL"
+ "$FORK_ROOT/venv/bin/python" - <<'PY'
+ import vdj_database_safety, sys
+ print("[start_8788] vdj_database_safety =", vdj_database_safety.__file__)
+diff --git a/ui/tests/conftest.py b/ui/tests/conftest.py
+index c097bcb..c3ec2df 100644
+--- a/ui/tests/conftest.py
++++ b/ui/tests/conftest.py
+@@ -19,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
+ for p in (str(ROOT), str(ROOT / "ui")):
+     if p not in sys.path:
+         sys.path.insert(0, p)
++# VDJ_AUTOCUE_ROOT=<canonical checkout> runs these tests against the canonical AutoCue.
++_AUTOCUE_ROOT = os.environ.get("VDJ_AUTOCUE_ROOT", "").strip()
++if _AUTOCUE_ROOT:
++    sys.path.insert(0, str(Path(_AUTOCUE_ROOT).expanduser().resolve()))
+ 
+ os.environ.setdefault("VDJ_ALLOW_RUNNING_WRITES", "1")
+ # Legacy fixtures are LF-only. The CRLF hard gate is exercised explicitly in
+diff --git a/ui/tests/test_ml_training.py b/ui/tests/test_ml_training.py
+index bb43f25..8038019 100644
+--- a/ui/tests/test_ml_training.py
++++ b/ui/tests/test_ml_training.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import unittest
++import os
+ from pathlib import Path
+ from unittest.mock import patch
+ 
+@@ -25,7 +26,8 @@ class MlTrainingSubprocessTests(unittest.TestCase):
+         env = ingest_subprocess_env()
+         self.assertEqual(env.get("OMP_NUM_THREADS"), "1")
+         self.assertEqual(env.get("PYTHONUNBUFFERED"), "1")
+-        repo_root = str(Path(__file__).resolve().parents[2])
++        override = os.environ.get("VDJ_AUTOCUE_ROOT", "").strip()
++        repo_root = str(Path(override).resolve()) if override else str(Path(__file__).resolve().parents[2])
+         self.assertIn(repo_root, env.get("PYTHONPATH", ""))
+ 
+     def test_ingest_slot_serializes_children(self) -> None:

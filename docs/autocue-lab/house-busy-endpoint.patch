@@ -1,0 +1,205 @@
+diff --git a/ui/app.py b/ui/app.py
+index 0c66b91..6c42c2a 100644
+--- a/ui/app.py
++++ b/ui/app.py
+@@ -2749,6 +2749,15 @@ def get_retry_cues_jobs() -> dict[str, Any]:
+     }
+ 
+ 
++@app.get("/api/busy")
++def get_busy() -> dict[str, Any]:
++    """For the AutoCue auto-updater: busy while any background job runs (sorter/busy.py)."""
++    from sorter.busy import busy_reasons
++
++    reasons = busy_reasons()
++    return {"ok": True, "busy": bool(reasons), "reasons": reasons[:20]}
++
++
+ @app.get("/api/retry-cues/batch/{batch_id}")
+ def get_retry_cues_batch(batch_id: str) -> dict[str, Any]:
+     batch = get_batch(batch_id)
+diff --git a/ui/sorter/busy.py b/ui/sorter/busy.py
+new file mode 100644
+index 0000000..3c61f57
+--- /dev/null
++++ b/ui/sorter/busy.py
+@@ -0,0 +1,52 @@
++"""Is this sorter doing background work right now? (GET /api/busy)
++
++The AutoCue auto-updater (vdj-autocue-lab, docs/autocue-lab/autoupdate) restarts a sorter on
++a new AutoCue version only while this reports idle. Background jobs run in daemon threads
++that die with the process, so a restart in the middle of one loses it, or leaves a song half
++done (a grid fix writes the BPM and the anchor as two separate saves). When unsure, busy.
++"""
++
++from __future__ import annotations
++
++import threading
++
++from .db_lock import get_db_write_lock
++
++WORKER_THREAD_PREFIXES = (
++    "autocue-",  # AutoCue jobs, batches and reattached workers (autocue_retry)
++    "grid-fix-",  # grid batches (grid_batch)
++    "ml-ingest-",  # cue model retraining (ml_training)
++    "ml-drop-",  # cue model: drop a track's labels and retrain (ml_training)
++    "assemble-",  # playlist assemble
++    "practice-analyze-",  # practice mix analysis
++    "stem-audit-",  # stem audit
++    "tx-recs-",  # transition recommendations
++)
++# Threads that live as long as the sorter and are never a job (tests/test_busy.py requires
++# every named thread in the sorter's code to be in one of these two lists).
++LONG_LIVED_THREADS = ("vdj-sideview-recs",)
++ACTIVE_JOB_STATUSES = ("queued", "running", "starting")
++
++
++def busy_reasons() -> list[str]:
++    """What keeps this sorter busy; empty when a restart loses nothing."""
++    reasons = sorted(
++        t.name
++        for t in threading.enumerate()
++        if t.is_alive() and t.name.startswith(WORKER_THREAD_PREFIXES)
++    )
++    lock = get_db_write_lock()
++    if lock.acquire(blocking=False):
++        lock.release()
++    else:
++        reasons.append("database.xml write in progress")
++    try:
++        from .autocue_retry import list_batches, list_jobs
++
++        for item in [*list_jobs(limit=1000), *list_batches(limit=1000)]:
++            status = str(item.get("status", "")).lower()
++            if status in ACTIVE_JOB_STATUSES:
++                reasons.append(f"AutoCue {item.get('id', '?')} {status}")
++    except Exception as exc:  # never report idle when the job list cannot be read
++        reasons.append(f"AutoCue job list unreadable ({exc.__class__.__name__})")
++    return reasons
+diff --git a/ui/tests/test_busy.py b/ui/tests/test_busy.py
+new file mode 100644
+index 0000000..cfcae58
+--- /dev/null
++++ b/ui/tests/test_busy.py
+@@ -0,0 +1,121 @@
++"""GET /api/busy (sorter/busy.py): the AutoCue auto-updater restarts this sorter only when idle."""
++
++import ast
++import threading
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++from sorter import busy
++from sorter.db_lock import get_db_write_lock
++
++
++def _hold(name: str):
++    """A thread named like a sorter worker, alive until the returned event is set."""
++    release = threading.Event()
++    started = threading.Event()
++
++    def run():
++        started.set()
++        release.wait(10)
++
++    t = threading.Thread(target=run, name=name, daemon=True)
++    t.start()
++    started.wait(5)
++    return t, release
++
++
++class BusyTests(unittest.TestCase):
++    def test_worker_threads_make_it_busy(self):
++        for name in ("grid-fix-b1", "autocue-retry-j1", "ml-ingest-x.flac", "assemble-a1",
++                     "practice-analyze-p1", "stem-audit-s1", "tx-recs-t1", "autocue-batch-b2"):
++            t, release = _hold(name)
++            try:
++                self.assertIn(name, busy.busy_reasons())
++            finally:
++                release.set()
++                t.join(5)
++            self.assertNotIn(name, busy.busy_reasons())
++
++    def test_other_threads_do_not(self):
++        t, release = _hold("vdj-sideview-recs")
++        try:
++            self.assertNotIn("vdj-sideview-recs", busy.busy_reasons())
++        finally:
++            release.set()
++            t.join(5)
++
++    def test_database_write_in_another_thread_makes_it_busy(self):
++        lock = get_db_write_lock()
++        got, done = threading.Event(), threading.Event()
++
++        def writer():
++            with lock:
++                got.set()
++                done.wait(10)
++
++        t = threading.Thread(target=writer, name="writer", daemon=True)
++        t.start()
++        got.wait(5)
++        try:
++            self.assertIn("database.xml write in progress", busy.busy_reasons())
++        finally:
++            done.set()
++            t.join(5)
++        self.assertNotIn("database.xml write in progress", busy.busy_reasons())
++
++    def test_queued_or_running_autocue_jobs_make_it_busy(self):
++        jobs = [{"id": "j1", "status": "ok"}, {"id": "j2", "status": "queued"}]
++        batches = [{"id": "b1", "status": "running"}, {"id": "b2", "status": "error"}]
++        with patch("sorter.autocue_retry.list_jobs", return_value=jobs), \
++                patch("sorter.autocue_retry.list_batches", return_value=batches):
++            reasons = busy.busy_reasons()
++        self.assertIn("AutoCue j2 queued", reasons)
++        self.assertIn("AutoCue b1 running", reasons)
++        self.assertFalse([r for r in reasons if "j1" in r or "b2" in r])
++
++    def test_unreadable_job_list_counts_as_busy(self):
++        with patch("sorter.autocue_retry.list_jobs", side_effect=RuntimeError("x")):
++            self.assertTrue(any("unreadable" in r for r in busy.busy_reasons()))
++
++
++UI = Path(__file__).resolve().parents[1]
++
++
++def _thread_names():
++    """(file:line, literal start of name= or None) for every threading.Thread(...) in the sorter."""
++    found = []
++    for path in [UI / "app.py", *sorted((UI / "sorter").glob("*.py"))]:
++        tree = ast.parse(path.read_text(encoding="utf-8"))
++        for node in ast.walk(tree):
++            if not isinstance(node, ast.Call):
++                continue
++            f = node.func
++            if not ((isinstance(f, ast.Attribute) and f.attr == "Thread") or (isinstance(f, ast.Name) and f.id == "Thread")):
++                continue
++            name = next((k.value for k in node.keywords if k.arg == "name"), None)
++            start = None
++            if isinstance(name, ast.Constant) and isinstance(name.value, str):
++                start = name.value
++            elif isinstance(name, ast.JoinedStr) and name.values and isinstance(name.values[0], ast.Constant):
++                start = name.values[0].value
++            found.append((f"{path.name}:{node.lineno}", start))
++    return found
++
++
++class EveryThreadIsKnownTests(unittest.TestCase):
++    """A new background job must not read as idle: each thread is a worker or long-lived."""
++
++    def test_every_sorter_thread_is_classified(self):
++        names = _thread_names()
++        self.assertGreater(len(names), 5)
++        unknown = [
++            (where, start) for where, start in names
++            if not start
++            or not (start.startswith(busy.WORKER_THREAD_PREFIXES) or start in busy.LONG_LIVED_THREADS)
++        ]
++        self.assertEqual(unknown, [], "name the thread and add it to sorter/busy.py")
++
++
++if __name__ == "__main__":
++    unittest.main()

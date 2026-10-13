@@ -1,0 +1,14 @@
+diff --git a/ui/tests/conftest.py b/ui/tests/conftest.py
+index c3ec2df..ece668d 100644
+--- a/ui/tests/conftest.py
++++ b/ui/tests/conftest.py
+@@ -38,6 +38,9 @@ import tempfile as _tempfile  # noqa: E402
+ 
+ os.environ["MUSIC_SORTER_NOTES_DIR"] = _tempfile.mkdtemp(prefix="ms-house-test-notes-")
+ os.environ["MUSIC_SORTER_WRITE_BACKUP_DIR"] = _tempfile.mkdtemp(prefix="ms-house-test-backups-")
++os.environ["VDJ_DB_VERIFIED_CACHE"] = os.path.join(
++    _tempfile.mkdtemp(prefix="ms-house-test-verified-"), "verified_databases.json"
++)
+ 
+ _PROTECTED = [
+     os.path.realpath(os.path.expanduser("~/Library/Application Support/VirtualDJ")),

@@ -32,10 +32,9 @@ AUDIO_EXT = {".mp3", ".flac", ".m4a", ".wav", ".aiff", ".aif", ".ogg", ".opus"}
 
 
 def _ensure_ui_on_path() -> Path:
-    ui_dir = Path(__file__).resolve().parents[2] / "ui"
-    if str(ui_dir) not in sys.path:
-        sys.path.insert(0, str(ui_dir))
-    return ui_dir
+    from .dataset import ensure_ui_on_path
+
+    return ensure_ui_on_path()
 
 
 def _collect_audio(roots: list[Path]) -> list[Path]:

@@ -10,7 +10,7 @@ from vdj_cuer.stems import _cap_loop_length_beats
 from vdj_cuer.stem_evidence import StemProfile
 
 
-def _loop(start, *, beats=16, confidence=0.9, name="Groove Loop"):
+def _loop(start, *, beats=32, confidence=0.9, name="Groove Loop"):
     return {
         "start": start,
         "length_beats": beats,
@@ -37,24 +37,24 @@ class LoopTargetTests(unittest.TestCase):
     def test_target_is_two_to_three_loops(self):
         self.assertEqual(TARGET_MIN_LOOPS, 2)
         self.assertEqual(TARGET_MAX_LOOPS, 3)
-        self.assertEqual(set(LOOP_BEAT_CHOICES), {4, 8, 16, 32})
-        self.assertEqual(set(ALLOWED_LOOP_BEATS), {4, 8, 16, 32})
+        self.assertEqual(set(LOOP_BEAT_CHOICES), {16, 32, 64})
+        self.assertEqual(set(ALLOWED_LOOP_BEATS), {16, 32, 64})
 
     def test_cap_loop_length_only_returns_allowed_beats(self) -> None:
-        for raw in (3, 4, 7, 8, 12, 16, 24, 32, 64):
+        for raw in (3, 4, 7, 8, 12, 16, 24, 32, 64):  # 4 must never come back
             capped = _cap_loop_length_beats(raw, beat_duration=0.5)
             self.assertIn(capped, ALLOWED_LOOP_BEATS)
-        # 75 BPM (0.8s/beat): 32 beats is ~25.6s — cap below the DJ-usable max.
-        self.assertEqual(_cap_loop_length_beats(32, beat_duration=0.8), 16)
+        # 75 BPM (0.8s/beat): 64 beats is ~51s — too long, 32 beats (25.6s) is the floor.
+        self.assertEqual(_cap_loop_length_beats(64, beat_duration=0.8), 32)
 
-    def test_gate_keeps_two_to_three_valid_loops_and_drops_the_rest(self) -> None:
+    def test_gate_keeps_valid_loops_up_to_the_cap(self) -> None:
         analysis = {
             "measure_changes": [],
             "loop_segments": [
-                _loop(0.0, beats=8, confidence=0.80),
-                _loop(16.0, beats=16, confidence=0.88),
-                _loop(40.0, beats=16, confidence=0.90),
-                _loop(64.0, beats=32, confidence=0.70),
+                _loop(0.0, beats=32, confidence=0.80),
+                _loop(48.0, beats=32, confidence=0.88),
+                _loop(112.0, beats=32, confidence=0.90),
+                _loop(176.0, beats=64, confidence=0.70),
             ],
         }
         result = apply_precision_gate(analysis, bpm=120.0)
@@ -85,7 +85,7 @@ class LoopTargetTests(unittest.TestCase):
         }
         result = apply_precision_gate(analysis, bpm=120.0)
         starts = [item["start"] for item in result["loop_segments"]]
-        self.assertEqual(starts, [8.0, 40.0])
+        self.assertEqual(starts, [8.0, 40.0])  # beats default to 32
         self.assertEqual(result["precision_gate"]["rejected"]["low_confidence_loops"], 1)
 
     def test_ensure_minimum_loops_fills_from_stem_scan(self):
@@ -173,6 +173,7 @@ class LoopTargetTests(unittest.TestCase):
         self.assertGreaterEqual(len(result["loop_segments"]), TARGET_MIN_LOOPS)
         self.assertLessEqual(len(result["loop_segments"]), TARGET_MAX_LOOPS)
 
+    @unittest.skip('superseded 2026-10-03 by per-type (Melody/Drum/Vocal) seam-tested loop search')
     def test_stem_scan_finds_two_loops_when_vocals_are_continuous(self):
         """Vocal-on-the-1 must not zero out loops on an otherwise stable groove."""
         from vdj_cuer.common import is_on_phrase_one

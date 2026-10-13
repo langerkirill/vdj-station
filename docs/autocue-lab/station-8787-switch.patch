@@ -1,0 +1,95 @@
+diff --git a/ui/sorter/autocue_path.py b/ui/sorter/autocue_path.py
+index 37e89ec..bca3b73 100644
+--- a/ui/sorter/autocue_path.py
++++ b/ui/sorter/autocue_path.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import os
+ import sys
+ from pathlib import Path
+ 
+@@ -20,7 +21,23 @@ def ensure_autocue_on_path() -> Path:
+               autocue_path.py
+ 
+     Also supports older checkouts named vdj-automatic-cuer.
++
++    ``VDJ_AUTOCUE_ROOT`` (the canonical AutoCue checkout) wins over everything
++    else and goes to the front of sys.path, ahead of any vendored copy here.
+     """
++    override = os.environ.get("VDJ_AUTOCUE_ROOT", "").strip()
++    if override:
++        root = Path(override).expanduser().resolve()
++        if not (root / "vdj_database_safety.py").is_file():
++            raise RuntimeError(
++                f"VDJ_AUTOCUE_ROOT={override} has no vdj_database_safety.py; "
++                "point it at the canonical AutoCue checkout."
++            )
++        path_str = str(root)
++        if path_str in sys.path:
++            sys.path.remove(path_str)
++        sys.path.insert(0, path_str)
++        return root
+     here = Path(__file__).resolve()
+     home = Path.home()
+     candidates = [
+diff --git a/ui/sorter/grid_preflight.py b/ui/sorter/grid_preflight.py
+index 851586e..3e75a13 100644
+--- a/ui/sorter/grid_preflight.py
++++ b/ui/sorter/grid_preflight.py
+@@ -313,7 +313,7 @@ def _deep_verify_alignment(
+ ) -> dict[str, Any]:
+     """Run onset verify in a new session so uvicorn --reload cannot EPIPE ffmpeg."""
+     ui_root = Path(__file__).resolve().parents[1]
+-    repo_root = Path(__file__).resolve().parents[2]
++    repo_root = ensure_autocue_on_path()
+     env = os.environ.copy()
+     env["PYTHONPATH"] = os.pathsep.join(
+         [str(repo_root), str(ui_root), env.get("PYTHONPATH", "")]
+diff --git a/ui/start_8787_noreload.sh b/ui/start_8787_noreload.sh
+index 68cf6dd..ff6f260 100755
+--- a/ui/start_8787_noreload.sh
++++ b/ui/start_8787_noreload.sh
+@@ -9,4 +9,11 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+ export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-1}"
+ export PYTHONUNBUFFERED=1
++# AutoCue from the canonical checkout when VDJ_AUTOCUE_ROOT is set (sorter/autocue_path.py
++# puts it first on sys.path). Unset = this checkout's own copy, as before.
++if [ -n "${VDJ_AUTOCUE_ROOT:-}" ]; then
++  [ -f "$VDJ_AUTOCUE_ROOT/vdj_database_safety.py" ] || { echo "[start_8787] VDJ_AUTOCUE_ROOT=$VDJ_AUTOCUE_ROOT has no vdj_database_safety.py"; exit 1; }
++  export PYTHONPATH="$VDJ_AUTOCUE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
++fi
++echo "[start_8787] autocue=${VDJ_AUTOCUE_ROOT:-/Users/kirilllanger/src/vdj-station}"
+ exec /Users/kirilllanger/src/vdj-station/venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8787
+diff --git a/ui/tests/conftest.py b/ui/tests/conftest.py
+new file mode 100644
+index 0000000..0bfcee4
+--- /dev/null
++++ b/ui/tests/conftest.py
+@@ -0,0 +1,24 @@
++"""Station UI test harness for the canonical AutoCue (VDJ_AUTOCUE_ROOT).
++
++The canonical safety module hard-gates CRLF / VDJ Song-row form; these legacy fixtures are
++LF-only, so the gates are relaxed for the TEST PROCESS only (never set in production).
++"""
++from __future__ import annotations
++
++import os
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++for p in (str(ROOT), str(ROOT / "ui")):
++    if p not in sys.path:
++        sys.path.insert(0, p)
++_AUTOCUE_ROOT = os.environ.get("VDJ_AUTOCUE_ROOT", "").strip()
++if _AUTOCUE_ROOT:
++    sys.path.insert(0, str(Path(_AUTOCUE_ROOT).expanduser().resolve()))
++
++os.environ.setdefault("MUSIC_SORTER_ALLOW_LF_DB", "1")
++os.environ.setdefault("VDJ_ALLOW_RUNNING_WRITES", "1")
++os.environ["MUSIC_SORTER_WRITE_BACKUP_DIR"] = tempfile.mkdtemp(prefix="station-test-backups-")
++os.environ["VDJ_DB_VERIFIED_CACHE"] = os.path.join(tempfile.mkdtemp(prefix="station-test-verified-"), "verified_databases.json")

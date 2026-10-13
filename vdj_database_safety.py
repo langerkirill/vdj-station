@@ -1396,8 +1396,12 @@ def rewrite_song_xml_in_database(
     new_song_xml: str,
     *,
     validate: bool = True,
+    base_song_xml: Optional[str] = None,
 ) -> Dict[str, int]:
     """Replace one Song block with pre-built XML that keeps native VDJ formatting.
+
+    ``base_song_xml``: the Song block the new XML was built from. If the block
+    in the file (re-read inside the lock) differs, nothing is written (stale).
 
     Re-read + splice happens inside ``vdj_database_exclusive_lock`` so a
     concurrent AutoCue child / UI edit of a *different* song cannot be
@@ -1414,6 +1418,13 @@ def rewrite_song_xml_in_database(
 
         start, end = span
         newline = _detect_newline(content)
+        if base_song_xml is not None:
+            _n = lambda x: x.replace("\r\n", "\n").strip()
+            if _n(content[start:end]) != _n(base_song_xml):
+                raise RuntimeError(
+                    "Song changed in database.xml after it was read for this edit "
+                    f"({audio_file_path}); nothing written. Re-run to rebuild from the current entry."
+                )
         song_xml = new_song_xml
         if newline == "\r\n":
             # Force CRLF for any injected markup (Path.read_text would have stripped it).
@@ -1434,12 +1445,38 @@ def rewrite_song_xml_in_database(
 
         prefix = content[:start]
         suffix = content[end:]
-        return _replace_database_parts_locked(
+        result = _replace_database_parts_locked(
             path,
             (prefix, song_xml, suffix),
             original_stats,
             stats_fn=_lightweight_content_stats if validate else None,
         )
+        # AutoCue 1.2.0: verify by content that the block landed (allowing heal_song_form).
+        if not _song_block_landed(song_xml, read_vdj_database_text(path)):
+            raise RuntimeError(
+                f"Write read-back mismatch for {audio_file_path}; treat as NOT saved."
+            )
+        return result
+
+
+def _song_block_landed(song_xml: str, back: str) -> bool:
+    """True if ``song_xml`` is in ``back``, allowing for heal_song_form's VDJ-form fixes
+    (compared via canonical_song_block; the block is found by its own opening line)."""
+    song_xml = song_xml.replace("\x00", "")
+    _n = lambda x: x.replace("\r\n", "\n").strip()
+    if _n(song_xml) in _n(back):
+        return True
+    want = canonical_song_block(song_xml)
+    open_line = want.split("\r\n", 1)[0]
+    at = back.find(open_line)
+    while at >= 0:
+        end = back.find("</Song>", at)
+        if end < 0:
+            return False
+        if canonical_song_block(back[at:end + len("</Song>")]) == want:
+            return True
+        at = back.find(open_line, at + 1)
+    return False
 
 
 def rewrite_song_in_database(
