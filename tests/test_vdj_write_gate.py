@@ -130,7 +130,10 @@ class WriteGateTests(unittest.TestCase):
             self.assertTrue(lock_path.is_file())
 
     def test_clone_cues_source_does_not_raw_write_database(self) -> None:
-        from sorter.playlist_assemble import clone_cues_for_set_paths
+        import pytest
+
+        # `sorter` is the Music Sorter package; it is not shipped in this repo/wheel.
+        clone_cues_for_set_paths = pytest.importorskip("sorter.playlist_assemble").clone_cues_for_set_paths
 
         src = inspect.getsource(clone_cues_for_set_paths)
         self.assertIn("atomic_replace_database", src)

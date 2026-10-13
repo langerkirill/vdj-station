@@ -1403,6 +1403,11 @@ def rewrite_song_xml_in_database(
     ``base_song_xml``: the Song block the new XML was built from. If the block
     in the file (re-read inside the lock) differs, nothing is written (stale).
 
+    Read-back: after the splice the file is re-read and the block must be there
+    (``_song_block_landed``). This runs even with ``validate=False``. A mismatch
+    raises RuntimeError AFTER the database file has already been replaced; nothing
+    rolls it back (recover from the pre-write backup if needed).
+
     Re-read + splice happens inside ``vdj_database_exclusive_lock`` so a
     concurrent AutoCue child / UI edit of a *different* song cannot be
     last-write-wins reverted. The lock is not re-entrant — the replace
