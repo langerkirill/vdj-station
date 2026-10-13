@@ -117,6 +117,8 @@ def main() -> int:
 
     head = git("rev-parse", "HEAD")
     known = {l.strip() for l in KNOWN.read_text().splitlines() if l.strip() and not l.startswith("#")} if KNOWN.is_file() else set()
+    # JUnit ids from the bundle run have no "tests." package prefix; accept both spellings
+    known |= {k[len("tests."):] for k in known if k.startswith("tests.")}
     # not under /tmp (the House read-only guard allows it) and not in a .dot folder (the House
     # library scan skips those): either would quietly hide tests
     scratch = Path("/var/tmp") if os.access("/var/tmp", os.W_OK) else REPO.parent
